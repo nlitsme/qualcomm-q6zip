@@ -38,6 +38,7 @@ Output will usually look like this:
 Program Headers:
   Type           Offset   VirtAddr   PhysAddr   FileSiz MemSiz  Flg Align
 ...
+  LOAD           0x1dc0000 0x85903000 0x85903000 0x7a9be 0x7a9be R   0x1000   << this is zlib compressed
   LOAD           0x1e3b000 0x8597e000 0x8597e000 0xa0f000 0xa0f000 R   0x1000  << this is the q6zip section
   LOAD           0x284b000 0x8638e000 0x8638e000 0x14000 0x14000 RW  0x1000   << this is the deltacomp section
   LOAD           0x2860000 0x863a3000 0x863a3000 0x80000 0x80000 RWE 0x1000
@@ -65,7 +66,6 @@ The q6zip data looks something like this:
   - approx the first half of the compressed entries will start with byte 0xff, from this you may be able to find the 
     number to pass with the `--skipheader` argument.
 
-
 Example usage:
 
 ```
@@ -74,6 +74,25 @@ python3 deltauncomp.py -o 0x8638E000 --dump mdm.elf
 
 python3 q6unzip.py -o 0x8597e000 --output q6zip.bin --skipheader 0x0f5d mdm.elf
 python3 deltauncomp.py -o 0x8638E000 --output delta.bin mdm.elf
+```
+
+
+## uncompressed location
+
+The deltacomp and q6zip decompressors decompress data into a memory section not mentioned in the ELF header.
+The pointers look like this in memory, so you can find them by looking for the addresses of the program sections:
+
+```
+84434D98  .long 0xD0000000   << q6zip decompressed data+code
+84434D9C  .long 0xD1105000   << end of q6zip decompressed data+code
+84434DA0  .long 0x8597E000   << q6zip compressed data
+84434DA4  .long 0x8638D000   << end of q6zip compressed data
+
+84434DA8  .long 0xD1105000   << delta decompressed data
+84434DAC  .long 0xD1592000   << end of delta decompressed data
+84434DB0  .long 0x8638E000   << delta compressed data
+84434DB4  .long 0x863A2000   << end of delta compressed data
+84434DB8  .ascii "02.01.10", 0
 ```
 
 
