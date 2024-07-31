@@ -25,6 +25,100 @@ else:
 def MASK(n):
     return (1<<n)-1
 
+
+class BitStreamReader:
+    """
+    Get bit chunks from `data`. starting at the LSB.
+    """
+    def __init__(self, data):
+        self.data = data
+        self.pos = -1
+        self.bitpos = 32
+        self.value = None
+
+    def nextvalue(self):
+        """
+        Loads next `value` from `data`, advancing `pos` and `bitpos`.
+        """
+        self.pos += 1
+        if self.pos >= len(self.data):
+            raise EOFError()
+        self.value = self.data[self.pos]
+        self.bitpos = 0
+
+    def get(self, n):
+        """
+        Return next `n` bits, crossing word boundaries
+        """
+        result = 0
+        shift = 0
+
+        # loop until all bits obtained.
+        while n>0:
+
+            # calculate the maximum number of bits we can get from
+            # the current `value`.
+            want = min(32-self.bitpos, n)
+
+            result |= self.getsome(want) << shift
+
+            shift += want
+            n -= want
+
+        return result
+
+    def getsome(self, n):
+        """
+        Return the next available chunk of `n` bits.
+        """
+        if self.bitpos>=32:
+            self.nextvalue()
+
+        assert(self.bitpos + n <= 32)
+
+        value = (self.value >> self.bitpos) & MASK(n)
+        self.bitpos += n
+        return value
+
+class WordStreamWriter:
+    """
+    Output stream which can duplicate values pushed to it at an earlier time.
+    """
+    def __init__(self):
+        self.data = []
+
+    def len(self):
+        return len(self.data)
+
+    def addword(self, value):
+        """
+        Add a new value.
+        """
+        self.data.append(value)
+
+    def copyword(self, lastout):
+        """
+        Copy a dword from the specified earlier position.
+        """
+        if -lastout>len(self.data):
+            self.data.append(0)
+        else:
+            self.data.append(self.data[lastout])
+
+    def copybits(self, lastout, srcval, bitlen, bitofs):
+        """
+        Use an earlier value, replacing `bitlen` bits starting at `bitofs`
+        with bits from `srcval`.
+        """
+        if -lastout>len(self.data):
+            value = 0
+        else:
+            value = self.data[lastout] & ~(MASK(bitlen)<<bitofs) 
+        value |= (srcval & MASK(bitlen)) << bitofs
+        self.data.append(value)
+
+
+
 class DeltaDecompressor:
     """
     Decompresses data encoded using the following bit packed format:
@@ -43,104 +137,12 @@ class DeltaDecompressor:
         self.anchorbits = anchorbits
         self.debug = False
 
-    class BitStreamReader:
-        """
-        Get bit chunks from `data`. starting at the LSB.
-        """
-        def __init__(self, data):
-            self.data = data
-            self.pos = -1
-            self.bitpos = 32
-            self.value = None
-
-        def nextvalue(self):
-            """
-            Loads next `value` from `data`, advancing `pos` and `bitpos`.
-            """
-            self.pos += 1
-            if self.pos >= len(self.data):
-                raise EOFError()
-            self.value = self.data[self.pos]
-            self.bitpos = 0
-
-        def get(self, n):
-            """
-            Return next `n` bits, crossing word boundaries
-            """
-            result = 0
-            shift = 0
-
-            # loop until all bits obtained.
-            while n>0:
-
-                # calculate the maximum number of bits we can get from
-                # the current `value`.
-                want = min(32-self.bitpos, n)
-
-                result |= self.getsome(want) << shift
-
-                shift += want
-                n -= want
-
-            return result
-
-        def getsome(self, n):
-            """
-            Return the next available chunk of `n` bits.
-            """
-            if self.bitpos>=32:
-                self.nextvalue()
-
-            assert(self.bitpos + n <= 32)
-
-            value = (self.value >> self.bitpos) & MASK(n)
-            self.bitpos += n
-            return value
-
-    class BitStreamWriter:
-        """
-        Output stream which can duplicate values pushed to it at an earlier time.
-        """
-        def __init__(self):
-            self.data = []
-
-        def len(self):
-            return len(self.data)
-
-        def addword(self, value):
-            """
-            Add a new value.
-            """
-            self.data.append(value)
-
-        def copyword(self, lastout):
-            """
-            Copy a dword from the specified earlier position.
-            """
-            if -lastout>len(self.data):
-                self.data.append(0)
-            else:
-                self.data.append(self.data[lastout])
-
-        def copybits(self, lastout, srcval, bitlen, bitofs):
-            """
-            Use an earlier value, replacing `bitlen` bits starting at `bitofs`
-            with bits from `srcval`.
-            """
-            if -lastout>len(self.data):
-                value = 0
-            else:
-                value = self.data[lastout] & ~(MASK(bitlen)<<bitofs) 
-            value |= (srcval & MASK(bitlen)) << bitofs
-            self.data.append(value)
-
-
     def decompress(self, compressed):
         """
         Decompresses data from a byte array `compressed`, returning the uncompressed data bytes.
         """
-        bits = self.BitStreamReader(compressed)
-        out = self.BitStreamWriter()
+        bits = BitStreamReader(compressed)
+        out = WordStreamWriter()
 
         nanchors = 1<<self.anchorbits
         __anchors = [0] * nanchors
@@ -148,37 +150,40 @@ class DeltaDecompressor:
 
         if self.debug:
             def log(msg):
-                print("    [%4x] %4x:%2d  %08X %s" % (out.len(), bits.pos, bits.bitpos, out.data[-1] if out.data else 0, msg))
+                print("    [%4x] %4x:%2d  %08x %s" % (out.len(), bits.pos, bits.bitpos, out.data[-1] if out.data else 0, msg))
         else:
             def log(msg):
                 pass
 
+        a = ''
         try:
             while out.len() < 0x400:
+                if self.debug:
+                    a = "{}:[{}] - ".format(curanchor, ','.join(f"{_:08x}" for _ in __anchors))
                 code = bits.get(2)
                 if code == 0:
                     out.addword(0)
 
-                    log("zero")
+                    log(f"{a}00:Z")
                 elif code == 1:
                     anchor = bits.get(self.anchorbits)
                     out.addword(__anchors[anchor])
 
-                    log("anchor(%d)" % anchor)
+                    log(f"{a}01:A={anchor}")
                 elif code == 2:
                     anchor = bits.get(self.anchorbits)
                     delta = bits.get(self.deltabits)
                     val = __anchors[anchor] = (__anchors[anchor] & ~MASK(self.deltabits)) | delta
                     out.addword(val)
 
-                    log("delta(%d, %03x)" % (anchor, delta))
+                    log(f"{a}10:A={anchor}+D={delta:03x}")
                 elif code == 3:
                     val = bits.get(32)
                     out.addword(val)
                     curanchor = (curanchor + 1) % nanchors
                     __anchors[curanchor] = val 
 
-                    log("save(%08x) -> %d" % (val, curanchor))
+                    log(f"{a}11:L={val:08x} -> {curanchor}")
 
         except EOFError:
             log("EOF")
@@ -205,7 +210,7 @@ def processhex(hexstr, args):
 
     print(b2a_hex(udata))
 
-def processfile(fh, args):
+def processelffile(fh, args):
     """
     Processes the delta compressed section from an ELF binary.
     Depending on the commandline args:
@@ -276,12 +281,54 @@ def processfile(fh, args):
                 ofh.write(udata)
 
 
+def processrawfile(fh, args):
+    """
+    Processes the delta compressed section from an RAW binary.
+    Depending on the commandline args:
+
+    --dump  - hexdumps the compresseddata and section headers.
+
+    --output  - saves decompressed data to the specified file
+
+    --verbose - prints compressed + uncompressed sizes for each block
+    -vv       - hexdumps both compressed and uncompressed data
+    
+    """
+
+    if args.output:
+        ofh = open(args.output, "wb")
+    elif not args.nooutput:
+        ofh = stdout
+    else:
+        ofh = None
+
+    C = DeltaDecompressor(deltabits=args.delta, anchorbits=args.anchor)
+
+    C.debug = args.debug
+
+    fh.seek(args.offset)
+    cdata = fh.read(args.length)
+
+    uncomp = C.decompress(bytes2intlist(cdata))
+    udata = intlist2bytes(uncomp)
+
+    if args.verbose:
+        print("        : %s" % b2a_hex(cdata))
+        print("        : %s" % b2a_hex(udata))
+    if ofh:
+        ofh.flush()
+        ofh.write(udata)
+
+
+
 def main():
     parser = argparse.ArgumentParser(description='Decompress packed delta ELF sections')
     parser.add_argument('--offset', '-o', help='Which delta section to decompress', type=str)
+    parser.add_argument('--length', '-l', help='size of section (rawfile only)', type=str)
     parser.add_argument('--dump', help='hex dump of compressed data', action='store_true')
     parser.add_argument('--verbose', '-v', action='count')
     parser.add_argument('--debug', action='store_true')
+    parser.add_argument('--rawfile', action='store_true')
     parser.add_argument('--nooutput', '-n', action='store_true')
     parser.add_argument('--output', type=str, help='Save output to file')
     parser.add_argument('--hex', type=str, help='uncompress hex data')
@@ -292,12 +339,17 @@ def main():
 
     if args.offset is not None:
         args.offset = int(args.offset, 0)
+    if args.length is not None:
+        args.length = int(args.length, 0)
 
     if args.hex:
         processhex(args.hex, args)
     else:
         with open(args.elffile, "rb") as fh:
-            processfile(fh, args)
+            if args.rawfile:
+                processrawfile(fh, args)
+            else:
+                processelffile(fh, args)
 
 if __name__=="__main__":
     main()
