@@ -110,6 +110,29 @@ class Header:
     class ProgramHeader:
         """
         parse / save an ELF program header
+
+        -- 64 bit layout
+
+        +00 dword type
+        +04 dword flags
+        +08 qword fileofs
+        +10 qword vaddr
+        +18 qword vaddr
+        +20 qword filesize
+        +28 qword memsize
+        +30 qword align
+
+        -- 32 bit layout
+
+        +00 dword type
+        +04 dword fileofs
+        +08 dword vaddr
+        +0c dword vaddr
+        +10 dword filesize
+        +14 dword memsize
+        +18 dword flags
+        +1c dword align
+
         """
         def parse(self, rd):
             self.type = rd.uint32()
