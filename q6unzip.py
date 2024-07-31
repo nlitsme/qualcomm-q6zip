@@ -27,6 +27,9 @@ def MASK(n):
     return (1<<n)-1
 
 def bitlog(n):
+    # note: in python3   bitlog(n) == n.bit_length-1
+    # 2**(x.bit_length-1) <= x < 2**x.bit_length
+    # 2**bitlog(x) <= x < 2 * 2**bitlog(x)
     r = -1
     while n:
         n >>= 1
@@ -89,7 +92,7 @@ class BitStreamReader:
         return value
 
 
-class BitStreamWriter:
+class WordStreamWriter:
     """
     Output stream which can duplicate values pushed to it at an earlier time.
     """
@@ -135,21 +138,21 @@ class Q6Unzipper:
     The data is packed with a variable length opcode, listed in the table below.
     Read the opcodes from right-to-left.
 
-   <masked:8>  <lastout:9>      000   |  MATCH_6N_2x0_SQ0   -> into byte#0    'mask byte 3 nn'
-               <lastout:9>      001   |  MATCH_8N_SQ0                         'lookback'
-   <masked:12> <lastout:9>     0010   |  MATCH_5N_3x0_SQ0   -> into byte#0,1  'mask 12 bit 20 nnn'
-               <dword:32>       011   |  NO_MATCH                             'uncompressed'
-               <entry1:10>      100   |  DICT1_MATCH                          'dictionary1 nnn'
-               <entry2:12>     0101   |  DICT2_MATCH                          'dictionary2 nnnn'
-   <masked:8>                   110   |  MATCH_6N_2x0_SQ1   -> into byte#0    'mask byte 3 nn'
-                                111   |  MATCH_8N_SQ1                         'sequential'
-   <masked:16>               001010   |  MATCH_4N_4x0_SQ1   -> into byte#0,1  'mask 16 bit 16 nnnn'
-   <masked:8>  <lastout:9>   101010   |  MATCH_6N_2x4_SQ0   -> into byte#2    'mask 16 bit 16 nn'
-   <masked:8>  <lastout:9>   111010   |  MATCH_6N_2x2_SQ0   -> into byte#1    'mask byte 2 nn'
-   <masked:8>               1011010   |  MATCH_6N_2x2_SQ1   -> into byte#1    'mask byte 2 nn'
-   <masked:8>               0011010   |  MATCH_6N_2x4_SQ1   -> into byte#2    'mask 16 bit 16 nn'     or END_BLOCK
-   <masked:12>                11101   |  MATCH_5N_3x0_SQ1   -> into byte#0,1  'mask 12 bit 20 nnn'
-   <masked:16> <lastout:9>    01101   |  MATCH_4N_4x0_SQ0   -> into byte#0,1  'mask 16 bit 16 nnnn'
+   <masked:8>  <lastout:9>      000   |20|  MATCH_6N_2x0_SQ0   -> into byte#0    'mask byte 3 nn'
+               <lastout:9>      001   |12|  MATCH_8N_SQ0                         'lookback'
+   <masked:8>               1011010   |15|  MATCH_6N_2x2_SQ1   -> into byte#1    'mask byte 2 nn'
+   <masked:8>               0011010   |15|  MATCH_6N_2x4_SQ1   -> into byte#2    'mask 16 bit 16 nn'     or END_BLOCK
+   <masked:16>               001010   |22|  MATCH_4N_4x0_SQ1   -> into byte#0,1  'mask 16 bit 16 nnnn'
+   <masked:8>  <lastout:9>   111010   |23|  MATCH_6N_2x2_SQ0   -> into byte#1    'mask byte 2 nn'
+   <masked:8>  <lastout:9>   101010   |23|  MATCH_6N_2x4_SQ0   -> into byte#2    'mask 16 bit 16 nn'
+   <masked:12> <lastout:9>     0010   |25|  MATCH_5N_3x0_SQ0   -> into byte#0,1  'mask 12 bit 20 nnn'
+               <dword:32>       011   |35|  NO_MATCH                             'uncompressed'
+               <entry1:10>      100   |13|  DICT1_MATCH                          'dictionary1 nnn'
+               <entry2:12>     0101   |16|  DICT2_MATCH                          'dictionary2 nnnn'
+   <masked:12>                11101   |17|  MATCH_5N_3x0_SQ1   -> into byte#0,1  'mask 12 bit 20 nnn'
+   <masked:16> <lastout:9>    01101   |30|  MATCH_4N_4x0_SQ0   -> into byte#0,1  'mask 16 bit 16 nnnn'
+   <masked:8>                   110   |11|  MATCH_6N_2x0_SQ1   -> into byte#0    'mask byte 3 nn'
+                                111   | 3|  MATCH_8N_SQ1                         'sequential'
 
 
     00 <offset:lookbacklenbits>
@@ -173,7 +176,7 @@ class Q6Unzipper:
         Decompresses data from a byte array `compressed`, returning the uncompressed data bytes.
         """
         bits = BitStreamReader(compressed)
-        out = BitStreamWriter()
+        out = WordStreamWriter()
 
         lastOut = -1        #  this is the only state of the algorithm.
 
@@ -324,7 +327,103 @@ def getchunkmeta(value):
 
     return Meta(signed(bits[0], 10), bits[1], bits[2], signed(bits[3], 6))
 
-def processfile(fh, args):
+def processrawfile(fh, args):
+    """
+    Processes the delta compressed section from a RAW binary.
+    Depending on the commandline args:
+
+    --dump  - hexdumps the compresseddata and section headers.
+
+    --output  - saves decompressed data to the specified file
+
+    --verbose - prints compressed + uncompressed sizes for each block
+    -vv       - hexdumps both compressed and uncompressed data
+    
+    """
+
+    npages, unknown = struct.unpack("<HH", fh.read(4))
+
+    dict1size, dict2size = splitdictsize(args.dictsize)
+    dict1 = bytes2intlist(fh.read(dict1size*4))
+    dict2 = bytes2intlist(fh.read(dict2size*4))
+
+    ptrs = bytes2intlist(fh.read(npages*4))
+    sizes = [ b-a for a, b in zip(ptrs, ptrs[1:]) ]
+
+    datastart = 4 + args.dictsize*4 + npages*4
+
+    fh.seek(0, 2)
+    dataend = fh.tell()
+    
+    offsets = []
+    o = datastart
+    for s in sizes:
+        offsets.append(o)
+        o += s
+    offsets.append(dataend)
+
+    if args.verbose:
+        print("p0 = %08x,  datastart=%08x, filepos=%08x" % (ptrs[0], datastart , fh.tell()))
+
+    if args.dump:
+        print("%08x: npages=%d, unk=0x%04x" % (args.offset, npages, unknown))
+        print("%08x: dict1 - %d words" % (args.offset+4, dict1size))
+        print("%08x: dict2 - %d words" % (args.offset+4+4*dict1size, dict2size))
+        print("%08x: ptrlist" % (args.offset+4+4*dict1size+4*dict2size))
+        print("%08x: compressed data" % (args.offset+4+4*dict1size+4*dict2size+4*npages))
+        for i, (ofs, size) in enumerate(zip(offsets, sizes)):
+            fh.seek(ofs)
+            cdata = fh.read(size)
+
+            cdata = bytes2intlist(cdata)
+
+            if i < args.skipheader:
+                a0 = getchunkmeta(cdata[0])
+                # (-1, 1..32, 0..4, 1..4)
+                a1 = getchunkmeta(cdata[1])
+                # (-1, 1..32, *, -4..2)
+
+                cdata = cdata[2:]
+
+                print("%08x: [%04x] (%s) (%s) (l=%03x) %s" % (ofs, i, a0, a1, len(cdata), " ".join("%08x" % _ for _ in cdata)))
+            else:
+                print("%08x: [%04x] %s" % (ofs, i, " ".join("%08x" % _ for _ in cdata)))
+
+    else:
+        if args.output:
+            ofh = open(args.output, "wb")
+        elif not args.nooutput:
+            ofh = stdout
+        else:
+            ofh = None
+
+        C = Q6Unzipper(dict1, dict2, args.lookback)
+        C.debug = args.debug
+
+        for i, (ofs, size) in enumerate(zip(offsets, sizes)):
+            if args.offset and args.offset!=ofs:
+                continue
+            fh.seek(ofs)
+            cdata = fh.read(size)
+
+            if i < args.skipheader:
+                cdata = cdata[8:]
+
+            uncomp = C.decompress(bytes2intlist(cdata))
+            udata = intlist2bytes(uncomp)
+
+            if args.verbose:
+                print("%08x: %04x -> %04x" % (ofs, nextofs-ofs, len(udata)))
+                if args.verbose>1:
+                    print("        : %s" % b2a_hex(cdata))
+                    print("        : %s" % b2a_hex(udata))
+            if ofh:
+                ofh.flush()
+                ofh.write(udata)
+
+
+
+def processelffile(fh, args):
     """
     Processes the delta compressed section from an ELF binary.
     Depending on the commandline args:
@@ -446,6 +545,7 @@ def main():
     parser.add_argument('--dump', help='hex dump of compressed data', action='store_true')
     parser.add_argument('--verbose', '-v', action='count')
     parser.add_argument('--debug', action='store_true')
+    parser.add_argument('--rawfile', action='store_true')
     parser.add_argument('--nooutput', '-n', action='store_true')
     parser.add_argument('--output', type=str, help='Save output to file')
 
@@ -471,10 +571,12 @@ def main():
         args.skipheader = int(args.skipheader , 0)
 
     with open(args.elffile, "rb") as fh:
-        if args.dict1 and args.dict2:
+        if args.rawfile:
+            processrawfile(fh, args)
+        elif args.dict1 and args.dict2:
             rawuncomp(fh, args)
         else:
-            processfile(fh, args)
+            processelffile(fh, args)
 
 if __name__=="__main__":
     main()
