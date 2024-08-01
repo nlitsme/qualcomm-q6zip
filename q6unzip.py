@@ -13,7 +13,6 @@ from dataclasses import dataclass
 import sys
 import struct
 import argparse
-from binascii import b2a_hex
 
 import ELF
 
@@ -138,27 +137,22 @@ class Q6Unzipper:
     The data is packed with a variable length opcode, listed in the table below.
     Read the opcodes from right-to-left.
 
-   <masked:8>  <lastout:9>      000   |20|  MATCH_6N_2x0_SQ0   -> into byte#0    'mask byte 3 nn'
-               <lastout:9>      001   |12|  MATCH_8N_SQ0                         'lookback'
-   <masked:8>               1011010   |15|  MATCH_6N_2x2_SQ1   -> into byte#1    'mask byte 2 nn'
-   <masked:8>               0011010   |15|  MATCH_6N_2x4_SQ1   -> into byte#2    'mask 16 bit 16 nn'     or END_BLOCK
-   <masked:16>               001010   |22|  MATCH_4N_4x0_SQ1   -> into byte#0,1  'mask 16 bit 16 nnnn'
-   <masked:8>  <lastout:9>   111010   |23|  MATCH_6N_2x2_SQ0   -> into byte#1    'mask byte 2 nn'
-   <masked:8>  <lastout:9>   101010   |23|  MATCH_6N_2x4_SQ0   -> into byte#2    'mask 16 bit 16 nn'
-   <masked:12> <lastout:9>     0010   |25|  MATCH_5N_3x0_SQ0   -> into byte#0,1  'mask 12 bit 20 nnn'
-               <dword:32>       011   |35|  NO_MATCH                             'uncompressed'
-               <entry1:10>      100   |13|  DICT1_MATCH                          'dictionary1 nnn'
-               <entry2:12>     0101   |16|  DICT2_MATCH                          'dictionary2 nnnn'
-   <masked:12>                11101   |17|  MATCH_5N_3x0_SQ1   -> into byte#0,1  'mask 12 bit 20 nnn'
-   <masked:16> <lastout:9>    01101   |30|  MATCH_4N_4x0_SQ0   -> into byte#0,1  'mask 16 bit 16 nnnn'
-   <masked:8>                   110   |11|  MATCH_6N_2x0_SQ1   -> into byte#0    'mask byte 3 nn'
-                                111   | 3|  MATCH_8N_SQ1                         'sequential'
+   <masked:8>  <lastout:9>      000   |20|  MATCH_6N_2x0_SQ0    'mask byte 3 nn'       out.copybits(lastOut, masked, 8, 0)
+               <lastout:9>      001   |12|  MATCH_8N_SQ0        'lookback'             out.copyword(lastOut)
+   <masked:8>               1011010   |15|  MATCH_6N_2x2_SQ1    'mask byte 2 nn'       out.copybits(lastOut, masked, 8, 8)
+   <masked:8>               0011010   |15|  MATCH_6N_2x4_SQ1    'mask 16 bit 16 nn'    out.copybits(lastOut, masked, 8, 16)   or END_BLOCK
+   <masked:16>               001010   |22|  MATCH_4N_4x0_SQ1    'mask 16 bit 16 nnnn'  out.copybits(lastOut, masked, 16, 0)
+   <masked:8>  <lastout:9>   111010   |23|  MATCH_6N_2x2_SQ0    'mask byte 2 nn'       out.copybits(lastOut, masked, 8, 8)
+   <masked:8>  <lastout:9>   101010   |23|  MATCH_6N_2x4_SQ0    'mask 16 bit 16 nn'    out.copybits(lastOut, masked, 8, 16)
+   <masked:12> <lastout:9>     0010   |25|  MATCH_5N_3x0_SQ0    'mask 12 bit 20 nnn'   out.copybits(lastOut, masked, 12, 0)
+               <dword:32>       011   |35|  NO_MATCH            'uncompressed'         out.addword(masked)
+               <entry1:10>      100   |13|  DICT1_MATCH         'dictionary1 nnn'      out.addword(self.dict1[entry])
+               <entry2:12>     0101   |16|  DICT2_MATCH         'dictionary2 nnnn'     out.addword(self.dict2[entry])
+   <masked:12>                11101   |17|  MATCH_5N_3x0_SQ1    'mask 12 bit 20 nnn'   out.copybits(lastOut, masked, 12, 0)
+   <masked:16> <lastout:9>    01101   |30|  MATCH_4N_4x0_SQ0    'mask 16 bit 16 nnnn'  out.copybits(lastOut, masked, 16, 0)
+   <masked:8>                   110   |11|  MATCH_6N_2x0_SQ1    'mask byte 3 nn'       out.copybits(lastOut, masked, 8, 0)
+                                111   | 3|  MATCH_8N_SQ1        'sequential'           out.copyword(lastOut)
 
-
-    00 <offset:lookbacklenbits>
-    00 111 11 <0b10:lookbacklenbits>
-    01 <index:tableNumBits>
-    11 101 <offset:lookbacklenbits> <instr:16>
     """
     def __init__(self, dict1, dict2, lookback=8):
         self.debug = False
@@ -182,7 +176,7 @@ class Q6Unzipper:
 
         if self.debug:
             def log(msg):
-                print("    [%4x] %4x:%2d  %08X (%u) %s" % (out.len(), bits.pos, bits.bitpos, out.data[-1] if out.data else 0, lastOut, msg))
+                print("    [%4x] %4x:%2d  %08x (%3d) %s" % (out.len(), bits.pos, bits.bitpos, out.data[-1] if out.data else 0, lastOut, msg))
 
             print("    outofs  ofs:bit  outdata last action")
         else:
@@ -196,77 +190,76 @@ class Q6Unzipper:
                     lastOut = bits.get(self.LB_BITS) - (1<<self.LB_BITS)
                     masked = bits.get(8)
                     out.copybits(lastOut, masked, 8, 0)
-
-                    log("mask byte 3 %02x" % (masked))
+                    log(f"mask @0 m:{masked:02x}  lb={lastOut+2**self.LB_BITS:03x}")
                 elif op1 == 1:  # MATCH_8N_SQ0 set lastout, dword from lastout
                     lastOut = bits.get(self.LB_BITS) - (1<<self.LB_BITS)
                     out.copyword(lastOut)
 
-                    log("lookback")
+                    log(f"lookback  lb={lastOut+2**self.LB_BITS:03x}")
                 elif op1 == 2:
                     if bits.get(1)==0: # MATCH_5N_3x0_SQ0        -- setting lastOut
                         lastOut = bits.get(self.LB_BITS) - (1<<self.LB_BITS)
                         masked = bits.get(12)
                         out.copybits(lastOut, masked, 12, 0)
-                        log("mask 12 bit 20 %03X" % (masked))
+                        log(f"mask @0 m:{masked:03x}  lb={lastOut+2**self.LB_BITS:03x}")
                     else:
                         op2 = bits.get(2)
                         if op2==0: # MATCH_4N_4x0_SQ1   -- reusing 'lastOut'
                             masked = bits.get(16)
                             out.copybits(lastOut, masked, 16, 0)
-                            log("mask 16 bit 16 %04X" % (masked))
+                            log(f"mask @0 m:{masked:04x}")
                         elif op2==2: # MATCH_6N_2x4_SQ0        -- setting lastOut
                             lastOut = bits.get(self.LB_BITS) - (1<<self.LB_BITS)
                             masked = bits.get(8)
                             out.copybits(lastOut, masked, 8, 16)
-                            log("mask 16 bit 16 %02X" % (masked))
+                            log(f"mask @16 m:{masked:02x}  lb={lastOut+2**self.LB_BITS:03x}")
                         elif op2==3: # MATCH_6N_2x2_SQ0        -- setting lastOut
                             lastOut = bits.get(self.LB_BITS) - (1<<self.LB_BITS)
                             masked = bits.get(8)
                             out.copybits(lastOut, masked, 8, 8)
-                            log("mask byte 2 %02X" % (masked))
+                            log(f"mask @8 m:{masked:02x}  lb={lastOut+2**self.LB_BITS:03x}")
                         elif bits.get(1): # MATCH_6N_2x2_SQ1   -- reusing 'lastOut'
                             masked = bits.get(8)
                             out.copybits(lastOut, masked, 8, 8)
-                            log("mask byte 2 %02X" % (masked))
+                            log(f"mask @8 m:{masked:02x}")
                         else: # MATCH_6N_2x4_SQ1    -- reusing 'lastOut'
                             masked = bits.get(8)
                             if masked != 0xFF:
                                 # .. in the modem.elf binary a check is here for masked==0xff -> stop
                                 out.copybits(lastOut, masked, 8, 16)
-                                log("mask 16 bit 16 %02X" % (masked))
+                                log(f"mask @16 m:{masked:02x}")
                             else:
-                                log("mask 16 bit 16 FF -> break")
+                                log("mask @16 FF -> break")
                 elif op1 == 3: # NO_MATCH
                     masked = bits.get(32)
                     out.addword(masked)
-                    log("uncompressed")
+                    log(f"lit {masked:08x}")
                 elif op1 == 4: # DICT1_MATCH
                     entry = bits.get(self.DICT1_BITS)
                     out.addword(self.dict1[entry])
-                    log("dictionary1 %03x" % entry)
+                    log(f"dict1 {entry:03x}")
                 elif op1 == 5:
                     if bits.get(1)==0: # DICT2_MATCH
                         entry = bits.get(self.DICT2_BITS)
                         out.addword(self.dict2[entry])
-                        log("dictionary2 %04x" % entry)
+                        log(f"dict2 {entry:04x}")
                     else:
                         if bits.get(1): # MATCH_5N_3x0_SQ1   -- reusing 'lastOut'
                             masked = bits.get(12)
                             out.copybits(lastOut, masked, 12, 0)
-                            log("mask 12 bit 20 %03x" % masked)
+                            log(f"mask @0 m:{masked:03x}")
                         else: # MATCH_4N_4x0_SQ0        -- setting lastOut
                             lastOut = bits.get(self.LB_BITS) - (1<<self.LB_BITS)
                             masked = bits.get(16)
                             out.copybits(lastOut, masked, 16, 0)
-                            log("mask 16 bit 16 %04x" % masked)
+                            log(f"mask @0 m:{masked:04x}  lb={lastOut+2**self.LB_BITS:03x}")
                 elif op1 == 6:   # MATCH_6N_2x0_SQ1 byte from stream   -- reusing 'lastOut'
                     masked = bits.get(8)
                     out.copybits(lastOut, masked, 8, 0)
-                    log("mask byte 3 %02x" % masked)
+                    log(f"mask @0 m:{masked:02x}")
                 elif op1 == 7:   # MATCH_8N_SQ1  dword from lastout   -- reusing 'lastOut'
                     out.copyword(lastOut)
-                    log("sequential")
+                    log("seq")
                 else:
                     print("unexpected op", op1)
 
@@ -280,7 +273,7 @@ class Q6Unzipper:
 
 def bytes2intlist(data):
     if len(data) % 4:
-        print("WARNING: unaligned data: %s" % (b2a_hex(data)))
+        print("WARNING: unaligned data: %s" % data.hex())
     return struct.unpack("<%dL" % (len(data)//4), data)
 
 def intlist2bytes(ilist):
@@ -308,7 +301,7 @@ def splitbits(value, *bitfields):
     return tuple(l)
 
 def signed(value, bits):
-    if value >= 2**(bits-1):
+    if value > 2**(bits-1):
         return value - 2**bits
     return value
 
@@ -328,19 +321,6 @@ def getchunkmeta(value):
     return Meta(signed(bits[0], 10), bits[1], bits[2], signed(bits[3], 6))
 
 def processrawfile(fh, args):
-    """
-    Processes the delta compressed section from a RAW binary.
-    Depending on the commandline args:
-
-    --dump  - hexdumps the compresseddata and section headers.
-
-    --output  - saves decompressed data to the specified file
-
-    --verbose - prints compressed + uncompressed sizes for each block
-    -vv       - hexdumps both compressed and uncompressed data
-    
-    """
-
     npages, unknown = struct.unpack("<HH", fh.read(4))
 
     dict1size, dict2size = splitdictsize(args.dictsize)
@@ -372,6 +352,8 @@ def processrawfile(fh, args):
         print("%08x: ptrlist" % (args.offset+4+4*dict1size+4*dict2size))
         print("%08x: compressed data" % (args.offset+4+4*dict1size+4*dict2size+4*npages))
         for i, (ofs, size) in enumerate(zip(offsets, sizes)):
+            if args.offset and args.offset!=ofs:
+                continue
             fh.seek(ofs)
             cdata = fh.read(size)
 
@@ -407,36 +389,43 @@ def processrawfile(fh, args):
             cdata = fh.read(size)
 
             if i < args.skipheader:
+                if args.verbose:
+                    print(f"skipheader: {cdata[:8].hex()}")
                 cdata = cdata[8:]
 
             uncomp = C.decompress(bytes2intlist(cdata))
             udata = intlist2bytes(uncomp)
 
             if args.verbose:
-                print("%08x: %04x -> %04x" % (ofs, nextofs-ofs, len(udata)))
+                print("%08x: %04x" % (ofs, len(udata)))
                 if args.verbose>1:
-                    print("        : %s" % b2a_hex(cdata))
-                    print("        : %s" % b2a_hex(udata))
+                    print("        : %s" % cdata.hex())
+                    print("        : %s" % udata.hex())
             if ofh:
                 ofh.flush()
                 ofh.write(udata)
 
 
+def processhex(hexstr, args):
+    data = bytes.fromhex(hexstr)
+
+    with open(args.dictfile, "rb") as fh:
+        fh.seek(4)
+        dict1size, dict2size = splitdictsize(args.dictsize)
+        dict1 = bytes2intlist(fh.read(dict1size*4))
+        dict2 = bytes2intlist(fh.read(dict2size*4))
+
+    C = Q6Unzipper(dict1, dict2, args.lookback)
+    C.debug = args.debug
+
+    uncomp = C.decompress(bytes2intlist(data))
+    udata = intlist2bytes(uncomp)
+
+    print(udata.hex())
+
+
 
 def processelffile(fh, args):
-    """
-    Processes the delta compressed section from an ELF binary.
-    Depending on the commandline args:
-
-    --dump  - hexdumps the compresseddata and section headers.
-
-    --output  - saves decompressed data to the specified file
-
-    --verbose - prints compressed + uncompressed sizes for each block
-    -vv       - hexdumps both compressed and uncompressed data
-    
-    """
-
     elf = ELF.read(fh)
 
     fh.seek(elf.virt2file(args.offset))
@@ -461,6 +450,8 @@ def processelffile(fh, args):
         print("%08x: ptrlist" % (args.offset+4+4*dict1size+4*dict2size))
         print("%08x: compressed data" % (args.offset+4+4*dict1size+4*dict2size+4*npages))
         for i, (ofs, nextofs) in enumerate(zip(ptrs, ptrs[1:]+(dataend,))):
+            if args.offset and args.offset!=ofs:
+                continue
             fh.seek(elf.virt2file(ofs))
             cdata = fh.read(nextofs-ofs)
 
@@ -502,8 +493,8 @@ def processelffile(fh, args):
             if args.verbose:
                 print("%08x: %04x -> %04x" % (ofs, nextofs-ofs, len(udata)))
                 if args.verbose>1:
-                    print("        : %s" % b2a_hex(cdata))
-                    print("        : %s" % b2a_hex(udata))
+                    print("        : %s" % cdata.hex())
+                    print("        : %s" % udata.hex())
             if ofh:
                 ofh.flush()
                 ofh.write(udata)
@@ -534,13 +525,13 @@ def rawuncomp(fh, args):
     uncomp = C.decompress(bytes2intlist(cdata))
     udata = intlist2bytes(uncomp)
 
-    print("comp    : %s" % b2a_hex(cdata))
-    print("full    : %s" % b2a_hex(udata))
+    print("comp    : %s" % cdata.hex())
+    print("full    : %s" % udata.hex())
 
 
 def main():
     parser = argparse.ArgumentParser(description='Decompress packed q6zip ELF sections')
-    parser.add_argument('--offset', '-o', help='Which q6zip section to decompress', type=str, required=True)
+    parser.add_argument('--offset', '-o', help='Which q6zip section to decompress', type=str)
     parser.add_argument('--size', '-s', help='how many bytes to decompress', type=str)
     parser.add_argument('--dump', help='hex dump of compressed data', action='store_true')
     parser.add_argument('--verbose', '-v', action='count')
@@ -550,13 +541,15 @@ def main():
     parser.add_argument('--output', type=str, help='Save output to file')
 
     parser.add_argument('--dictsize', '-d', help='size of the dictionary in words', type=str, default='0x4400')
+    parser.add_argument('--dictfile', '-D', help='load dict from', type=str)
     parser.add_argument('--lookback', help='lookback depth', type=str, default='8')
     parser.add_argument('--skipheader', help='number of items with extra skip header', type=str, default='0xf7a') # for quectel
 
     parser.add_argument('--dict1', help='where is dict1', type=str)
     parser.add_argument('--dict2', help='where is dict2', type=str)
+    parser.add_argument('--hex', type=str, help='uncompress hex data')
 
-    parser.add_argument('elffile', help='Which file to process', type=str)
+    parser.add_argument('elffile', help='Which file to process', type=str, nargs='?')
     args = parser.parse_args()
 
     if args.offset is not None:
@@ -570,13 +563,16 @@ def main():
     if args.skipheader is not None:
         args.skipheader = int(args.skipheader , 0)
 
-    with open(args.elffile, "rb") as fh:
-        if args.rawfile:
-            processrawfile(fh, args)
-        elif args.dict1 and args.dict2:
-            rawuncomp(fh, args)
-        else:
-            processelffile(fh, args)
+    if args.hex:
+        processhex(args.hex, args)
+    elif args.elffile:
+        with open(args.elffile, "rb") as fh:
+            if args.rawfile:
+                processrawfile(fh, args)
+            elif args.dict1 and args.dict2:
+                rawuncomp(fh, args)
+            else:
+                processelffile(fh, args)
 
 if __name__=="__main__":
     main()
