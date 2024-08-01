@@ -12,7 +12,6 @@ from __future__ import division, print_function
 import sys
 import struct
 import argparse
-from binascii import b2a_hex, a2b_hex
 
 import ELF
 
@@ -194,21 +193,21 @@ class DeltaDecompressor:
 
 def bytes2intlist(data):
     if len(data) % 4:
-        print("WARNING: unaligned data: %s" % (b2a_hex(data)))
+        print("WARNING: unaligned data: %s" % (data.hex()))
     return struct.unpack("<%dL" % (len(data)/4), data)
 
 def intlist2bytes(ilist):
     return struct.pack("<%dL" % len(ilist), *ilist)
 
 def processhex(hexstr, args):
-    data = a2b_hex(hexstr.replace(' ', ''))
+    data = bytes.fromhex(hexstr)
     C = DeltaDecompressor(deltabits=args.delta, anchorbits=args.anchor)
     C.debug = args.debug
 
     uncomp = C.decompress(bytes2intlist(data))
     udata = intlist2bytes(uncomp)
 
-    print(b2a_hex(udata))
+    print(udata.hex())
 
 def processelffile(fh, args):
     """
@@ -274,8 +273,8 @@ def processelffile(fh, args):
             if args.verbose:
                 print("%08x: %04x -> %04x" % (ofs, nextofs-ofs, len(udata)))
                 if args.verbose>1:
-                    print("        : %s" % b2a_hex(cdata))
-                    print("        : %s" % b2a_hex(udata))
+                    print("        : %s" % cdata.hex())
+                    print("        : %s" % udata.hex())
             if ofh:
                 ofh.flush()
                 ofh.write(udata)
@@ -313,8 +312,8 @@ def processrawfile(fh, args):
     udata = intlist2bytes(uncomp)
 
     if args.verbose:
-        print("        : %s" % b2a_hex(cdata))
-        print("        : %s" % b2a_hex(udata))
+        print("        : %s" % cdata.hex())
+        print("        : %s" % udata.hex())
     if ofh:
         ofh.flush()
         ofh.write(udata)
