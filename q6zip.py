@@ -178,10 +178,9 @@ class LookbackMask(Operation):
             out.put(self.m, self.op.masklen)
             zipper.lastOut = self.lb-2**zipper.LB_BITS
         def __repr__(self):
-            match self.op.masklen:
-                case 8: m = f"{self.m:02x}"
-                case 12: m = f"{self.m:03x}"
-                case 16: m = f"{self.m:04x}"
+            if self.op.masklen== 8: m = f"{self.m:02x}"
+            elif self.op.masklen== 12: m = f"{self.m:03x}"
+            elif self.op.masklen== 16: m = f"{self.m:04x}"
             return f"mask @{self.op.bitofs} m:{m}  lb={self.lb:03x}"
 
     def __init__(self, *args):
@@ -209,10 +208,9 @@ class Mask(Operation):
             out.put(self.op.code, self.op.codelen)
             out.put(self.m, self.op.masklen)
         def __repr__(self):
-            match self.op.masklen:
-                case 8: m = f"{self.m:02x}"
-                case 12: m = f"{self.m:03x}"
-                case 16: m = f"{self.m:04x}"
+            if self.op.masklen== 8: m = f"{self.m:02x}"
+            elif self.op.masklen== 12: m = f"{self.m:03x}"
+            elif self.op.masklen== 16: m = f"{self.m:04x}"
             return f"mask @{self.op.bitofs} m:{m}"
 
 
@@ -249,6 +247,7 @@ class Break(Operation):
 
 class Q6Zipper:
     def __init__(self, dict1, dict2, lookback=8):
+        self.debug = False
         self.dict1 = dict1
         self.dict2 = dict2
 
@@ -283,6 +282,8 @@ class Q6Zipper:
 
         self.lastOut = -1    # the compressor state.
 
+        self.breakpos0 = self.breakpos1 = None
+
     def getdict(self, bits):
         if bits == self.DICT1_BITS: return self.dict1
         if bits == self.DICT2_BITS: return self.dict2
@@ -313,8 +314,7 @@ class Q6Zipper:
                     if self.debug:
                         print(f"    [{inp.pos:4x}] {len(out.data):4x}:{out.bitpos:2d}  {word:08x} ({self.lastOut:3d}) {m}")
                     break
-            if False: #inp.pos==1:
-                # TODO: when do I insert a break?
+            if self.needbreak(inp, out):
                 op = Break()
                 op.output(out)
 
@@ -325,6 +325,14 @@ class Q6Zipper:
 
         return out.data
  
+    def needbreak(self, inp, out):
+        if self.breakpos0 == inp.pos:
+            self.breakpos0 = None
+            return True
+        if self.breakpos1 == inp.pos:
+            self.breakpos1 = None
+            return True
+
 def main():
     parser = argparse.ArgumentParser(description='Compress data using q6zip compression')
     parser.add_argument('--offset', '-o', help='Which section to compress', type=str, default='0')
@@ -332,6 +340,8 @@ def main():
     parser.add_argument('--dict1', help='offset:length to dict1', type=str, default='4:0x1000')
     parser.add_argument('--dict2', help='offset:length to dict2', type=str, default='0x1004:0x10000')
     parser.add_argument('--dictfile', help='load dict from', type=str)
+    parser.add_argument('--breakpos0', help='load dict from', type=str)
+    parser.add_argument('--breakpos1', help='load dict from', type=str)
     parser.add_argument('--debug', action='store_true')
 
     parser.add_argument('srcfile', help='Which file to process', type=str)
@@ -341,6 +351,10 @@ def main():
         args.offset = int(args.offset, 0)
     if args.length is not None:
         args.length = int(args.length, 0)
+    if args.breakpos0 is not None:
+        args.breakpos0 = int(args.breakpos0, 0)
+    if args.breakpos1 is not None:
+        args.breakpos1 = int(args.breakpos1, 0)
 
     if m := re.match(r'(\w+):(\w+)', args.dict1):
         args.dict1 = int(m[1],0), int(m[2],0)
@@ -364,6 +378,12 @@ def main():
 
         C = Q6Zipper(dict1, dict2)
         C.debug = args.debug
+
+        if args.breakpos0 is not None:
+            C.breakpos0 = args.breakpos0
+        if args.breakpos1 is not None:
+            C.breakpos1 = args.breakpos1
+
         res = C.compress(data)
     
     res = struct.pack(f"<{len(res)}L", *res)
