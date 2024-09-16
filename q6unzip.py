@@ -137,21 +137,23 @@ class Q6Unzipper:
     The data is packed with a variable length opcode, listed in the table below.
     Read the opcodes from right-to-left.
 
-   <masked:8>  <lastout:9>      000   |20|  MATCH_6N_2x0_SQ0    'mask byte 3 nn'       out.copybits(lastOut, masked, 8, 0)
-               <lastout:9>      001   |12|  MATCH_8N_SQ0        'lookback'             out.copyword(lastOut)
-   <masked:8>               1011010   |15|  MATCH_6N_2x2_SQ1    'mask byte 2 nn'       out.copybits(lastOut, masked, 8, 8)
-   <masked:8>               0011010   |15|  MATCH_6N_2x4_SQ1    'mask 16 bit 16 nn'    out.copybits(lastOut, masked, 8, 16)   or END_BLOCK
-   <masked:16>               001010   |22|  MATCH_4N_4x0_SQ1    'mask 16 bit 16 nnnn'  out.copybits(lastOut, masked, 16, 0)
-   <masked:8>  <lastout:9>   111010   |23|  MATCH_6N_2x2_SQ0    'mask byte 2 nn'       out.copybits(lastOut, masked, 8, 8)
-   <masked:8>  <lastout:9>   101010   |23|  MATCH_6N_2x4_SQ0    'mask 16 bit 16 nn'    out.copybits(lastOut, masked, 8, 16)
-   <masked:12> <lastout:9>     0010   |25|  MATCH_5N_3x0_SQ0    'mask 12 bit 20 nnn'   out.copybits(lastOut, masked, 12, 0)
-               <dword:32>       011   |35|  NO_MATCH            'uncompressed'         out.addword(masked)
-               <entry1:10>      100   |13|  DICT1_MATCH         'dictionary1 nnn'      out.addword(self.dict1[entry])
-               <entry2:12>     0101   |16|  DICT2_MATCH         'dictionary2 nnnn'     out.addword(self.dict2[entry])
-   <masked:12>                11101   |17|  MATCH_5N_3x0_SQ1    'mask 12 bit 20 nnn'   out.copybits(lastOut, masked, 12, 0)
-   <masked:16> <lastout:9>    01101   |30|  MATCH_4N_4x0_SQ0    'mask 16 bit 16 nnnn'  out.copybits(lastOut, masked, 16, 0)
-   <masked:8>                   110   |11|  MATCH_6N_2x0_SQ1    'mask byte 3 nn'       out.copybits(lastOut, masked, 8, 0)
-                                111   | 3|  MATCH_8N_SQ1        'sequential'           out.copyword(lastOut)
+               <entry1:10>      100   |13|  DICT1_MATCH       dict1 nnn                out.addword(self.dict1[entry])
+               <entry2:12>     0101   |16|  DICT2_MATCH       dict1 nnnn               out.addword(self.dict2[entry])
+               <lastout:9>      001   |12|  MATCH_8N_SQ0      lookback  lb=nnn         out.copyword(lastOut)
+                                111   | 3|  MATCH_8N_SQ1      seq                      out.copyword(lastOut)
+               <dword:32>       011   |35|  NO_MATCH          lit nnnnnnnn             out.addword(masked)
+                                                                                       
+   <masked:8>               0011010   |15|  MATCH_6N_2x4_SQ1  mask @16 m:nn            out.copybits(lastOut, masked, 8, 16)   or END_BLOCK
+   <masked:8>               1011010   |15|  MATCH_6N_2x2_SQ1  mask @8 m:nn             out.copybits(lastOut, masked, 8, 8)
+   <masked:8>                   110   |11|  MATCH_6N_2x0_SQ1  mask @0 m:nn             out.copybits(lastOut, masked, 8, 0)
+   <masked:12>                11101   |17|  MATCH_5N_3x0_SQ1  mask @0 m:nnn            out.copybits(lastOut, masked, 12, 0)
+   <masked:16>               001010   |22|  MATCH_4N_4x0_SQ1  mask @0 m:nnnn           out.copybits(lastOut, masked, 16, 0)
+
+   <masked:8>  <lastout:9>   101010   |23|  MATCH_6N_2x4_SQ0  mask @16 m:nn  lb=nnn    out.copybits(lastOut, masked, 8, 16)
+   <masked:8>  <lastout:9>   111010   |23|  MATCH_6N_2x2_SQ0  mask @8 m:nn  lb=nnn     out.copybits(lastOut, masked, 8, 8)
+   <masked:8>  <lastout:9>      000   |20|  MATCH_6N_2x0_SQ0  mask @0 m:nn  lb=nnn     out.copybits(lastOut, masked, 8, 0)
+   <masked:12> <lastout:9>     0010   |25|  MATCH_5N_3x0_SQ0  mask @0 m:nnn  lb=nnn    out.copybits(lastOut, masked, 12, 0)
+   <masked:16> <lastout:9>    01101   |30|  MATCH_4N_4x0_SQ0  mask @0 m:nnnn  lb=nnn   out.copybits(lastOut, masked, 16, 0)
 
     """
     def __init__(self, dict1, dict2, lookback=8):
@@ -229,7 +231,7 @@ class Q6Unzipper:
                                 out.copybits(lastOut, masked, 8, 16)
                                 log(f"mask @16 m:{masked:02x}")
                             else:
-                                log("mask @16 FF -> break")
+                                log("break")
                 elif op1 == 3: # NO_MATCH
                     masked = bits.get(32)
                     out.addword(masked)
