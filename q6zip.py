@@ -64,9 +64,10 @@ class BitStreamWriter:
 @dataclass
 class Operation:
     code : int
-    codelen : int
-    masklen : int
-    arglen : int
+    codelen : int     # nr of bits in the code
+    qcomorder : int   # op ordering used by qualcomm
+    masklen : int     # mask bitlen
+    arglen : int      # non mask arg bitlen
 
     @abstractmethod
     def matches(self, word, zipper, indata) -> bool: ...
@@ -196,7 +197,7 @@ class LookbackMask(Operation):
                 return self.Match(self, (word&mask)>>self.bitofs, lbrange-(indata.pos-1-i))
 
     def __repr__(self):
-        return f"lbmask(m={self.masklen}, o={self.bitofs})"
+        return f"mask @{self.bitofs} m:{'n'*(self.masklen//4)}  lb=nnn"
 
 class Mask(Operation):
     # op: <masked> {11101|011010|001010|1011010|110}
@@ -232,11 +233,11 @@ class Mask(Operation):
             return self.Match(self, m)
 
     def __repr__(self):
-        return f"mask(m={self.masklen}, o={self.bitofs})"
+        return f"mask @{self.bitofs} m:{'n'*(self.masklen//4)}"
 
 class Break(Operation):
     def __init__(self):
-        super().__init__( 0b0011010, 7, 8, 0)
+        super().__init__( 0b0011010, 7, 0, 8, 0)
 
     def output(self, out):
         out.put(self.code, self.codelen)
@@ -255,30 +256,47 @@ class Q6Zipper:
 
         self.DICT1_BITS = bitlog(len(dict1))
         self.DICT2_BITS = bitlog(len(dict2))
+        """  order used by qualcomm
+         1   3 MATCH_8N_SQ1      seq
+         2  11 MATCH_6N_2x0_SQ1  mask @0 m:nn
+         3  11 MATCH_8N_SQ0      lookback
+         4  13 DICT1_MATCH       dict(l=10)
+         5  15 MATCH_6N_2x2_SQ1  mask @8 m:nn
+         6  15 MATCH_6N_2x4_SQ1  mask @16 m:nn
+         7  18 DICT2_MATCH       dict(l=14)
+         8  17 MATCH_5N_3x0_SQ1  mask @0 m:nnn
+         9  19 MATCH_6N_2x0_SQ0  mask @0 m:nn  lb=nnn
+        10  22 MATCH_4N_4x0_SQ1  mask @0 m:nnnn
+        11  22 MATCH_6N_2x2_SQ0  mask @8 m:nn  lb=nnn
+        12  22 MATCH_6N_2x4_SQ0  mask @16 m:nn  lb=nnn
+        13  24 MATCH_5N_3x0_SQ0  mask @0 m:nnn  lb=nnn
+        14  29 MATCH_4N_4x0_SQ0  mask @0 m:nnnn  lb=nnn
+        15  35 NO_MATCH          literal
+        """
+        self.ops = [    #   code clen   #  m arg  [bitpos]
+            Dict(            0b100, 3,  4, 0, self.DICT1_BITS),   # DICT1_MATCH        out.addword(self.dict1[entry])
+            Dict(           0b0101, 4,  7, 0, self.DICT2_BITS),   # DICT2_MATCH        out.addword(self.dict2[entry])
+            Lookback(        0b001, 3,  3, 0, self.LB_BITS),      # MATCH_8N_SQ0       out.copyword(lastOut)
+            Sequential(      0b111, 3,  1, 0,  0),                # MATCH_8N_SQ1       out.copyword(lastOut)
+            Literal(         0b011, 3, 15, 0, 32),                # NO_MATCH           out.addword(masked)
 
-        self.ops = [
-            Dict(            0b100, 3, 0, self.DICT1_BITS),   # DICT1_MATCH        'dictionary1 nnn'      out.addword(self.dict1[entry])
-            Dict(           0b0101, 4, 0, self.DICT2_BITS),   # DICT2_MATCH        'dictionary2 nnnn'     out.addword(self.dict2[entry])
-            Lookback(        0b001, 3, 0, self.LB_BITS),      # MATCH_8N_SQ0       'lookback'             out.copyword(lastOut)
-            Sequential(      0b111, 3, 0, 0),                 # MATCH_8N_SQ1       'sequential'           out.copyword(lastOut)
-            Literal(         0b011, 3, 0, 32),                # NO_MATCH           'uncompressed'         out.addword(masked)
+            Mask(        0b0011010, 7,  6, 8, 0,16),              # MATCH_6N_2x4_SQ1   out.copybits(lastOut, masked,  8,16)   or END_BLOCK or END_BLOCK
+            Mask(        0b1011010, 7,  5, 8, 0, 8),              # MATCH_6N_2x2_SQ1   out.copybits(lastOut, masked,  8, 8)
+            Mask(            0b110, 3,  2, 8, 0, 0),              # MATCH_6N_2x0_SQ1   out.copybits(lastOut, masked,  8, 0)
+            Mask(          0b11101, 5,  8,12, 0, 0),              # MATCH_5N_3x0_SQ1   out.copybits(lastOut, masked, 12, 0)
+            Mask(         0b001010, 6, 10,16, 0, 0),              # MATCH_4N_4x0_SQ1   out.copybits(lastOut, masked, 16, 0)
 
-            Mask(          0b11101, 5,12, 0, 0),              # MATCH_5N_3x0_SQ1   'mask 12 bit 20 nnn'   out.copybits(lastOut, masked, 12, 0)
-            Mask(        0b0011010, 7, 8, 0,16),              # MATCH_6N_2x4_SQ1   'mask 16 bit 16 nn'    out.copybits(lastOut, masked,  8,16)   or END_BLOCK or END_BLOCK
-            Mask(         0b001010, 6,16, 0, 0),              # MATCH_4N_4x0_SQ1   'mask 16 bit 16 nnnn'  out.copybits(lastOut, masked, 16, 0)
-            Mask(        0b1011010, 7, 8, 0, 8),              # MATCH_6N_2x2_SQ1   'mask byte 2 nn'       out.copybits(lastOut, masked,  8, 8)
-            Mask(            0b110, 3, 8, 0, 0),              # MATCH_6N_2x0_SQ1   'mask byte 3 nn'       out.copybits(lastOut, masked,  8, 0)
-
-            LookbackMask(   0b0010, 4,12, self.LB_BITS, 0),   # MATCH_5N_3x0_SQ0   'mask 12 bit 20 nnn'   out.copybits(lastOut, masked, 12, 0)
-            LookbackMask( 0b101010, 6, 8, self.LB_BITS,16),   # MATCH_6N_2x4_SQ0   'mask 16 bit 16 nn'    out.copybits(lastOut, masked,  8,16)
-            LookbackMask(  0b01101, 5,16, self.LB_BITS, 0),   # MATCH_4N_4x0_SQ0   'mask 16 bit 16 nnnn'  out.copybits(lastOut, masked, 16, 0)
-            LookbackMask( 0b111010, 6, 8, self.LB_BITS, 8),   # MATCH_6N_2x2_SQ0   'mask byte 2 nn'       out.copybits(lastOut, masked,  8, 8)
-            LookbackMask(    0b000, 3, 8, self.LB_BITS, 0),   # MATCH_6N_2x0_SQ0   'mask byte 3 nn'       out.copybits(lastOut, masked,  8, 0)
+            LookbackMask( 0b101010, 6, 12, 8, self.LB_BITS,16),   # MATCH_6N_2x4_SQ0   out.copybits(lastOut, masked,  8,16)
+            LookbackMask( 0b111010, 6, 11, 8, self.LB_BITS, 8),   # MATCH_6N_2x2_SQ0   out.copybits(lastOut, masked,  8, 8)
+            LookbackMask(    0b000, 3,  9, 8, self.LB_BITS, 0),   # MATCH_6N_2x0_SQ0   out.copybits(lastOut, masked,  8, 0)
+            LookbackMask(   0b0010, 4, 13,12, self.LB_BITS, 0),   # MATCH_5N_3x0_SQ0   out.copybits(lastOut, masked, 12, 0)
+            LookbackMask(  0b01101, 5, 14,16, self.LB_BITS, 0),   # MATCH_4N_4x0_SQ0   out.copybits(lastOut, masked, 16, 0)
         ]
 
         # sort by bit-size
-        self.ops = sorted(self.ops, key=lambda e:e.bitsize())
-        ##for op in self.ops: print(f"{op.bitsize()} {op}")
+        #self.ops = sorted(self.ops, key=lambda e:e.bitsize())
+        self.ops = sorted(self.ops, key=lambda e:e.qcomorder)
+        #for op in self.ops: print(f"{op.bitsize()} {op}")
 
         self.lastOut = -1    # the compressor state.
 
