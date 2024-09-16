@@ -40,6 +40,9 @@ class WordStreamReader:
         return self.data[self.pos-1]
 
 class BitStreamWriter:
+    """
+    write bits to a stream of 32-bit words.
+    """
     def __init__(self):
         self.data = []
         self.bitpos = 0
@@ -59,6 +62,9 @@ class BitStreamWriter:
 
 @dataclass
 class Operation:
+    """
+    baseclass for compression operations
+    """
     code : int
     anchorlen : int
     arglen : int
@@ -77,7 +83,11 @@ class Operation:
         def output(self, zipper, out) -> None: ...
 
 class Anchor(Operation):
-    # code: 01 <aa>
+    """
+    Constructed using: Anchor(0b01, self.anchorbits, 0),
+    Outputs code: 01 <aa>
+    Which will on decompression insert one of the four 'anchor' values.
+    """
     class Match(Operation.MatchBase):
         def __init__(self, op, aa):
             self.op = op
@@ -94,7 +104,12 @@ class Anchor(Operation):
                 return self.Match(self, i)
 
 class AnchorDelta(Operation):
-    # code: 10 <aa> <delta>
+    """
+    Constructed using: AnchorDelta(0b10, self.anchorbits, self.deltabits)
+    Outputs code: 10 <aa> <delta>
+    Which will on decompression insert one of the four 'anchor' values,
+    with the lowest bits replaced by 'delta'. And update the specified 'anchor'.
+    """
     class Match(Operation.MatchBase):
         def __init__(self, op, aa, delta):
             self.op = op
@@ -116,7 +131,11 @@ class AnchorDelta(Operation):
                 return self.Match(self, i, word&deltamask)
 
 class Literal(Operation):
-    # code: 11 <word>
+    """
+    Constructed using: Literal(0b11, 0, 32),
+    Outputs code: 11 <word>
+    Which will on decompression produce the specified word, and update the current 'anchor'.
+    """
     class Match(Operation.MatchBase):
         def __init__(self, op, w):
             self.op = op
@@ -134,7 +153,11 @@ class Literal(Operation):
         return self.Match(self, word)
 
 class Zero(Operation):
-    # code: 00
+    """
+    Constructed using: Zero(0b00, 0, 0 ),
+    Outputs code: 00
+    Which will on decompression produce a ZERO word.
+    """
     class Match(Operation.MatchBase):
         def __init__(self, op):
             self.op = op

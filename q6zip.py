@@ -44,6 +44,9 @@ class WordStreamReader:
         return self.data[self.pos-1]
 
 class BitStreamWriter:
+    """
+    write bits to a stream of 32-bit words.
+    """
     def __init__(self):
         self.data = []
         self.bitpos = 0
@@ -63,6 +66,9 @@ class BitStreamWriter:
 
 @dataclass
 class Operation:
+    """
+    baseclass for compression operations
+    """
     code : int
     codelen : int     # nr of bits in the code
     qcomorder : int   # op ordering used by qualcomm
@@ -84,7 +90,11 @@ class Operation:
 
 
 class Sequential(Operation):
-    # op: 111
+    """
+    Construct as: Sequential(      0b111, 3,  1, 0,  0),                # MATCH_8N_SQ1       out.copyword(lastOut)
+    outputs op: 111
+    When decompressing, repeats the previous outputted word.
+    """
     class Match(Operation.MatchBase):
         def __init__(self, op):
             self.op = op
@@ -102,7 +112,11 @@ class Sequential(Operation):
         return f"seq"
 
 class Lookback(Operation):
-    # op: <lookback> 001
+    """
+    Construct as: Lookback(        0b001, 3,  3, 0, self.LB_BITS),      # MATCH_8N_SQ0       out.copyword(lastOut)
+    outpus op: <lookback> 001
+    When decompressing, repeats the word 'lookback' items back.
+    """
     class Match(Operation.MatchBase):
         def __init__(self, op, lb):
             self.op = op
@@ -124,7 +138,13 @@ class Lookback(Operation):
         return f"lookback"
 
 class Dict(Operation):
-    # op: <index> {100|0101}
+    """
+    Construct in one of the following ways:
+    Dict(            0b100, 3,  4, 0, self.DICT1_BITS),   # DICT1_MATCH        out.addword(self.dict1[entry])
+    Dict(           0b0101, 4,  7, 0, self.DICT2_BITS),   # DICT2_MATCH        out.addword(self.dict2[entry])
+    outputs op: <index> {100|0101}
+    When decompressing, inserts the word at the specified dictionary location.
+    """
     class Match(Operation.MatchBase):
         def __init__(self, op, ent):
             self.op = op
@@ -149,7 +169,11 @@ class Dict(Operation):
         return f"dict(l={self.arglen})"
 
 class Literal(Operation):
-    # op: <word> 011
+    """
+    Construct as: Literal(         0b011, 3, 15, 0, 32),                # NO_MATCH           out.addword(masked)
+    outputs op: <word> 011
+    When decompressing outputs the specifeid literal word.
+    """
     class Match(Operation.MatchBase):
         def __init__(self, op, w):
             self.op = op
@@ -167,7 +191,17 @@ class Literal(Operation):
         return f"literal"
 
 class LookbackMask(Operation):
-    # op: <masked> <lookback> {0010|101010|01101|111010|000}
+    """
+    Construct in one of the following ways:
+    LookbackMask( 0b101010, 6, 12, 8, self.LB_BITS,16),   # MATCH_6N_2x4_SQ0   out.copybits(lastOut, masked,  8,16)
+    LookbackMask( 0b111010, 6, 11, 8, self.LB_BITS, 8),   # MATCH_6N_2x2_SQ0   out.copybits(lastOut, masked,  8, 8)
+    LookbackMask(    0b000, 3,  9, 8, self.LB_BITS, 0),   # MATCH_6N_2x0_SQ0   out.copybits(lastOut, masked,  8, 0)
+    LookbackMask(   0b0010, 4, 13,12, self.LB_BITS, 0),   # MATCH_5N_3x0_SQ0   out.copybits(lastOut, masked, 12, 0)
+    LookbackMask(  0b01101, 5, 14,16, self.LB_BITS, 0),   # MATCH_4N_4x0_SQ0   out.copybits(lastOut, masked, 16, 0)
+    outputs op: <masked> <lookback> {0010|101010|01101|111010|000}
+
+    When decompressing, outputs the specified previous word, with the masked bits replaced with the 'mask' value.
+    """
     class Match(Operation.MatchBase):
         def __init__(self, op, m, lb):
             self.op = op
@@ -200,7 +234,17 @@ class LookbackMask(Operation):
         return f"mask @{self.bitofs} m:{'n'*(self.masklen//4)}  lb=nnn"
 
 class Mask(Operation):
-    # op: <masked> {11101|011010|001010|1011010|110}
+    """
+    Construct in one of the following ways:
+    Mask(        0b0011010, 7,  6, 8, 0,16),              # MATCH_6N_2x4_SQ1   out.copybits(lastOut, masked,  8,16)   or END_BLOCK or END_BLOCK
+    Mask(        0b1011010, 7,  5, 8, 0, 8),              # MATCH_6N_2x2_SQ1   out.copybits(lastOut, masked,  8, 8)
+    Mask(            0b110, 3,  2, 8, 0, 0),              # MATCH_6N_2x0_SQ1   out.copybits(lastOut, masked,  8, 0)
+    Mask(          0b11101, 5,  8,12, 0, 0),              # MATCH_5N_3x0_SQ1   out.copybits(lastOut, masked, 12, 0)
+    Mask(         0b001010, 6, 10,16, 0, 0),              # MATCH_4N_4x0_SQ1   out.copybits(lastOut, masked, 16, 0)
+    outputs op: <masked> {11101|011010|001010|1011010|110}
+
+    When decompressing, repeats the most recent value, with the masked bits replaced.
+    """
     class Match(Operation.MatchBase):
         def __init__(self, op, m):
             self.op = op
@@ -236,6 +280,10 @@ class Mask(Operation):
         return f"mask @{self.bitofs} m:{'n'*(self.masklen//4)}"
 
 class Break(Operation):
+    """
+    Breaks are inserted only in some compressed blocks.
+    They allow half a block to be decompressed.
+    """
     def __init__(self):
         super().__init__( 0b0011010, 7, 0, 8, 0)
 
