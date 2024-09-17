@@ -36,14 +36,14 @@ Output will usually look like this:
 
 ```
 Program Headers:
-  Type           Offset   VirtAddr   PhysAddr   FileSiz MemSiz  Flg Align
+  Type   Offset VirtAddr PhysAddr  FileSiz   MemSiz Flg 
 ...
-  LOAD           0x1dc0000 0x85903000 0x85903000 0x7a9be 0x7a9be R   0x1000   << this is zlib compressed
-  LOAD           0x1e3b000 0x8597e000 0x8597e000 0xa0f000 0xa0f000 R   0x1000  << this is the q6zip section
-  LOAD           0x284b000 0x8638e000 0x8638e000 0x14000 0x14000 RW  0x1000   << this is the deltacomp section
-  LOAD           0x2860000 0x863a3000 0x863a3000 0x80000 0x80000 RWE 0x1000
-  LOAD           0x28e1000 0x86424000 0x86424000 0xa2b0c 0xa2b0c RW  0x1000
-  LOAD           0x2984000 0x864c7000 0x864c7000 0x00000 0x1539000 RW  0x1000
+  LOAD  1b9d000 859ff000 859ff000    7a1f5    7a1f5 R   --  zlibcomp    overlay_mem_dump ro_fatal
+  LOAD  1c18000 85a7a000 85a7a000   9be000   9be000 R   --  q6zipped    .candidate_compress_section       | va=d0000000
+  LOAD  25d7000 86439000 86439000    14000    14000 RW  --  deltacomped .rw_candidate_compress_section    | va=d104b000
+  LOAD  25ec000 8644e000 8644e000    80000    80000 RWE --  
+  LOAD  266d000 864cf000 864cf000   16dc50   16dc50 RW  --  QSR_STRING                                    | va=d4080000
+  LOAD  27db000 8663d000 8663d000    00000  13c3000 RW  --  
 ```
 
 The deltacomp data looks something like this:
@@ -69,11 +69,11 @@ The q6zip data looks something like this:
 Example usage:
 
 ```
-python3 q6unzip.py -o 0x8597e000 --dump --skipheader 0x0f5d mdm.elf
-python3 deltauncomp.py -o 0x8638E000 --dump mdm.elf
+python3 q6unzip.py -o 0x85a7a000 --dump --skipheader 0x0f15 mdm.elf
+python3 deltauncomp.py -o 0x86439000 --dump mdm.elf
 
-python3 q6unzip.py -o 0x8597e000 --output q6zip.bin --skipheader 0x0f5d mdm.elf
-python3 deltauncomp.py -o 0x8638E000 --output delta.bin mdm.elf
+python3 q6unzip.py -o 0x85a7a000 --output q6zip.bin --skipheader 0x0f15 mdm.elf
+python3 deltauncomp.py -o 0x86439000 --output delta.bin mdm.elf
 ```
 
 
@@ -83,16 +83,18 @@ The deltacomp and q6zip decompressors decompress data into a memory section not 
 The pointers look like this in memory, so you can find them by looking for the addresses of the program sections:
 
 ```
-84434D98  .long 0xD0000000   << q6zip decompressed data+code
-84434D9C  .long 0xD1105000   << end of q6zip decompressed data+code
-84434DA0  .long 0x8597E000   << q6zip compressed data
-84434DA4  .long 0x8638D000   << end of q6zip compressed data
+virtaddr fileofs
+8450BB00 01aadb00 .long 0xd0000000   << q6zip decompressed data+code
+8450BB04 01aadb04 .long 0xd104b000   << end of q6zip decompressed data+code
+8450BB08 01aadb08 .long 0x85a7a000   << q6zip compressed data
+8450BB0c 01aadb0c .long 0x86438000   << end of q6zip compressed data
 
-84434DA8  .long 0xD1105000   << delta decompressed data
-84434DAC  .long 0xD1592000   << end of delta decompressed data
-84434DB0  .long 0x8638E000   << delta compressed data
-84434DB4  .long 0x863A2000   << end of delta compressed data
-84434DB8  .ascii "02.01.10", 0
+8450BB10 01aadb10 .long 0xd104b000   << delta decompressed data
+8450BB14 01aadb14 .long 0xd14dc000   << end of delta decompressed data
+8450BB18 01aadb18 .long 0x86439000   << delta compressed data
+8450BB1c 01aadb1c .long 0x8644d000   << end of delta compressed data
+
+8450BB20 01aadb20 .ascii "02.01.09", 0
 ```
 
 
