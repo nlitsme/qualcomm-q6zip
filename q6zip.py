@@ -2,6 +2,10 @@
 Tool for compressing q6zip compressed CODE sections.
 
 Author: Willem Hengeveld <itsme@gsmk.de>
+
+TODO: add code to compress entire files.
+TODO: automatically add 'break' position information.
+
 """
 from __future__ import division, print_function
 from dataclasses import dataclass
@@ -408,7 +412,7 @@ def main():
     parser.add_argument('--dictfile', help='load dict from', type=str)
     parser.add_argument('--breakpos0', help='load dict from', type=str)
     parser.add_argument('--breakpos1', help='load dict from', type=str)
-    parser.add_argument('--debug', action='store_true')
+    parser.add_argument('--debug', action='store_true', help="show all compression opcodes")
 
     parser.add_argument('srcfile', help='Which file to process', type=str)
     args = parser.parse_args()
@@ -422,6 +426,7 @@ def main():
     if args.breakpos1 is not None:
         args.breakpos1 = int(args.breakpos1, 0)
 
+    # fileoffset : bytesize
     if m := re.match(r'(\w+):(\w+)', args.dict1):
         args.dict1 = int(m[1],0), int(m[2],0)
     if m := re.match(r'(\w+):(\w+)', args.dict2):

@@ -2,6 +2,9 @@
 Tool for compressing delta compressed DATA sections.
 
 Author: Willem Hengeveld <itsme@gsmk.de>
+
+TODO: add code to compress an entire file.
+
 """
 from __future__ import division, print_function
 from dataclasses import dataclass
@@ -234,7 +237,7 @@ def main():
     parser = argparse.ArgumentParser(description='Compress data using delta compression')
     parser.add_argument('--offset', '-o', help='Which section to compress', type=str, default='0')
     parser.add_argument('--length', '-l', help='how many bytes to compress', type=str, default='0x1000')
-    parser.add_argument('--debug', action='store_true')
+    parser.add_argument('--debug', action='store_true', help="show all compression opcodes")
 
     parser.add_argument('file', help='Which file to process', type=str)
     args = parser.parse_args()
