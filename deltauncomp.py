@@ -194,7 +194,7 @@ class DeltaDecompressor:
 def bytes2intlist(data):
     if len(data) % 4:
         print("WARNING: unaligned data: %s" % (data.hex()))
-    return struct.unpack("<%dL" % (len(data)/4), data)
+    return list(struct.unpack("<%dL" % (len(data)/4), data))
 
 def intlist2bytes(ilist):
     return struct.pack("<%dL" % len(ilist), *ilist)
@@ -230,7 +230,7 @@ def processelffile(fh, args):
         return
     fh.seek(fileofs)
 
-    npages, unknown = struct.unpack("<HH", fh.read(4))
+    npages, version = struct.unpack("<HH", fh.read(4))
 
     ptrs = bytes2intlist(fh.read(npages*4))
     datastart = args.offset + 4 + npages*4
@@ -240,7 +240,7 @@ def processelffile(fh, args):
         print("file:%08x,  p0 = %08x,  datastart=%08x, filepos=%08x" % (fileofs, ptrs[0], datastart , fh.tell()))
 
     if args.dump:
-        print("%08x: npages=%d, unk=0x%04x" % (args.offset, npages, unknown))
+        print("%08x: npages=%d, ver=0x%04x" % (args.offset, npages, version))
         print("%08x: ptrlist" % (args.offset+4))
         print("%08x: compressed data" % (args.offset+4+4*npages))
         for i, (ofs, nextofs) in enumerate(zip(ptrs, ptrs[1:]+(dataend,))):
@@ -294,41 +294,79 @@ def processrawfile(fh, args):
     
     """
 
-    if args.output:
-        ofh = open(args.output, "wb")
-    elif not args.nooutput:
-        ofh = stdout
-    else:
-        ofh = None
+    npages, version = struct.unpack("<HH", fh.read(4))
 
-    C = DeltaDecompressor(deltabits=args.delta, anchorbits=args.anchor)
+    ptrs = bytes2intlist(fh.read(npages*4))
 
-    C.debug = args.debug
+    firstblk_ofs = fh.tell()
 
-    fh.seek(args.offset)
-    cdata = fh.read(args.length)
+    fh.seek(0, 2)
+    dataend_ofs = fh.tell()
+    dataend_ptr = dataend_ofs - firstblk_ofs + ptrs[0]
 
-    uncomp = C.decompress(bytes2intlist(cdata))
-    udata = intlist2bytes(uncomp)
+    sizes = [ b-a for a, b in zip(ptrs, ptrs[1:] + [ dataend_ptr ] ) ]
+
+    offsets = []
+    o = firstblk_ofs
+    for s in sizes:
+        offsets.append(o)
+        o += s
+    offsets.append(dataend_ofs)
 
     if args.verbose:
-        print("        : %s" % cdata.hex())
-        print("        : %s" % udata.hex())
-    if ofh:
-        ofh.flush()
-        ofh.write(udata)
+        print("p0 = %08x,  datastart=%08x, filepos=%08x" % (ptrs[0], firstblk_ofs, fh.tell()))
+
+    if args.dump:
+        print("%08x: npages=%d, ver=0x%04x" % (0, npages, version))
+        print("%08x: ptrlist" % (4))
+        print("%08x: compressed data" % (4+4*npages))
+        for i, (ofs, size) in enumerate(zip(offsets, sizes)):
+            if args.offset and args.offset!=ofs:
+                continue
+            fh.seek(ofs)
+            cdata = fh.read(size)
+
+            cdata = bytes2intlist(cdata)
+
+            print("%08x: [%04x] %s" % (ofs, i, " ".join("%08x" % _ for _ in cdata)))
+    else:
+        if args.output:
+            ofh = open(args.output, "wb")
+        elif not args.nooutput:
+            ofh = stdout
+        else:
+            ofh = None
+
+        C = DeltaDecompressor(deltabits=args.delta, anchorbits=args.anchor)
+        C.debug = args.debug
+
+        for i, (ofs, size) in enumerate(zip(offsets, sizes)):
+            if args.offset and args.offset!=ofs:
+                continue
+            fh.seek(ofs)
+            cdata = fh.read(size)
+
+            uncomp = C.decompress(bytes2intlist(cdata))
+            udata = intlist2bytes(uncomp)
+
+            if args.verbose:
+                print("        : %s" % cdata.hex())
+                print("        : %s" % udata.hex())
+            if ofh:
+                ofh.flush()
+                ofh.write(udata)
 
 
 
 def main():
     parser = argparse.ArgumentParser(description='Decompress packed delta ELF sections')
-    parser.add_argument('--offset', '-o', help='Which delta section to decompress', type=str)
+    parser.add_argument('--offset', '-o', help='Which delta section to decompress', type=str, default="0")
     parser.add_argument('--length', '-l', help='size of section (rawfile only)', type=str)
     parser.add_argument('--dump', help='hex dump of compressed data', action='store_true')
     parser.add_argument('--verbose', '-v', action='count')
-    parser.add_argument('--debug', action='store_true')
-    parser.add_argument('--rawfile', action='store_true')
-    parser.add_argument('--nooutput', '-n', action='store_true')
+    parser.add_argument('--debug', action='store_true', help="show all compression opcodes")
+    parser.add_argument('--rawfile', action='store_true', help="file contains only the deltacomp section")
+    parser.add_argument('--nooutput', '-n', action='store_true', help="don't output decompressed data")
     parser.add_argument('--output', type=str, help='Save output to file')
     parser.add_argument('--hex', type=str, help='uncompress hex data')
     parser.add_argument('--delta', type=int, help='number of bits in delta values', default=10)
@@ -336,19 +374,20 @@ def main():
     parser.add_argument('elffile', help='Which file to process', type=str, nargs='?')
     args = parser.parse_args()
 
-    if args.offset is not None:
-        args.offset = int(args.offset, 0)
+    args.offset = int(args.offset, 0)
     if args.length is not None:
         args.length = int(args.length, 0)
 
     if args.hex:
         processhex(args.hex, args)
-    else:
+    elif args.elffile:
         with open(args.elffile, "rb") as fh:
             if args.rawfile:
                 processrawfile(fh, args)
             else:
                 processelffile(fh, args)
+    else:
+        print("no inpput specified: either --hex or elffile")
 
 if __name__=="__main__":
     main()
