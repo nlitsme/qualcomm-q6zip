@@ -276,7 +276,7 @@ class Q6Unzipper:
 def bytes2intlist(data):
     if len(data) % 4:
         print("WARNING: unaligned data: %s" % data.hex())
-    return struct.unpack("<%dL" % (len(data)//4), data)
+    return list(struct.unpack("<%dL" % (len(data)//4), data))
 
 def intlist2bytes(ilist):
     return struct.pack("<%dL" % len(ilist), *ilist)
@@ -323,36 +323,44 @@ def getchunkmeta(value):
     return Meta(signed(bits[0], 10), bits[1], bits[2], signed(bits[3], 6))
 
 def processrawfile(fh, args):
-    npages, unknown = struct.unpack("<HH", fh.read(4))
+    """
+    decompresses a .elf section saved to a separate file,
+    like how the modem.bNN files are stored in the NON-HLOS filesystem
+
+    with --offset you can specify a specific block to decode.
+    """
+    npages, version = struct.unpack("<HH", fh.read(4))
 
     dict1size, dict2size = splitdictsize(args.dictsize)
     dict1 = bytes2intlist(fh.read(dict1size*4))
     dict2 = bytes2intlist(fh.read(dict2size*4))
 
     ptrs = bytes2intlist(fh.read(npages*4))
-    sizes = [ b-a for a, b in zip(ptrs, ptrs[1:]) ]
 
-    datastart = 4 + args.dictsize*4 + npages*4
+    firstblk_ofs = fh.tell()
 
     fh.seek(0, 2)
-    dataend = fh.tell()
-    
+    dataend_ofs = fh.tell()
+    dataend_ptr = dataend_ofs - firstblk_ofs + ptrs[0]
+
+    sizes = [ b-a for a, b in zip(ptrs, ptrs[1:] + [ dataend_ptr ] ) ]
+
     offsets = []
-    o = datastart
+    o = firstblk_ofs
     for s in sizes:
         offsets.append(o)
         o += s
-    offsets.append(dataend)
+    offsets.append(dataend_ofs)
 
     if args.verbose:
-        print("p0 = %08x,  datastart=%08x, filepos=%08x" % (ptrs[0], datastart , fh.tell()))
+        print("p0 = %08x,  datastart=%08x, filepos=%08x" % (ptrs[0], firstblk_ofs, fh.tell()))
 
     if args.dump:
-        print("%08x: npages=%d, unk=0x%04x" % (args.offset, npages, unknown))
-        print("%08x: dict1 - %d words" % (args.offset+4, dict1size))
-        print("%08x: dict2 - %d words" % (args.offset+4+4*dict1size, dict2size))
-        print("%08x: ptrlist" % (args.offset+4+4*dict1size+4*dict2size))
-        print("%08x: compressed data" % (args.offset+4+4*dict1size+4*dict2size+4*npages))
+        print("%08x: npages=%d, ver=0x%04x" % (0, npages, version))
+        print("%08x: dict1 - %d words" % (4, dict1size))
+        print("%08x: dict2 - %d words" % (4+4*dict1size, dict2size))
+        print("%08x: ptrlist" % (4+4*dict1size+4*dict2size))
+        print("%08x: compressed data" % (4+4*dict1size+4*dict2size+4*npages))
         for i, (ofs, size) in enumerate(zip(offsets, sizes)):
             if args.offset and args.offset!=ofs:
                 continue
@@ -432,7 +440,7 @@ def processelffile(fh, args):
 
     fh.seek(elf.virt2file(args.offset))
 
-    npages, unknown = struct.unpack("<HH", fh.read(4))
+    npages, version = struct.unpack("<HH", fh.read(4))
 
     dict1size, dict2size = splitdictsize(args.dictsize)
     dict1 = bytes2intlist(fh.read(dict1size*4))
@@ -446,12 +454,12 @@ def processelffile(fh, args):
         print("p0 = %08x,  datastart=%08x, filepos=%08x" % (ptrs[0], datastart , fh.tell()))
 
     if args.dump:
-        print("%08x: npages=%d, unk=0x%04x" % (args.offset, npages, unknown))
+        print("%08x: npages=%d, ver=0x%04x" % (args.offset, npages, version))
         print("%08x: dict1 - %d words" % (args.offset+4, dict1size))
         print("%08x: dict2 - %d words" % (args.offset+4+4*dict1size, dict2size))
         print("%08x: ptrlist" % (args.offset+4+4*dict1size+4*dict2size))
         print("%08x: compressed data" % (args.offset+4+4*dict1size+4*dict2size+4*npages))
-        for i, (ofs, nextofs) in enumerate(zip(ptrs, ptrs[1:]+(dataend,))):
+        for i, (ofs, nextofs) in enumerate(zip(ptrs, ptrs[1:]+[dataend])):
             if args.offset and args.offset!=ofs:
                 continue
             fh.seek(elf.virt2file(ofs))
@@ -501,8 +509,11 @@ def processelffile(fh, args):
                 ofh.flush()
                 ofh.write(udata)
 
-def rawuncomp(fh, args):
-    """ note: args.offset has a different meaning for this function """
+def decompresssingle(fh, args):
+    """
+    decompress a single block
+    note: args.offset has a different meaning for this function
+    """
     def getdict(spec):
         a, b = spec.split(':')
         return int(a, 0), int(b, 0)
@@ -537,14 +548,16 @@ def main():
     parser.add_argument('--size', '-s', help='how many bytes to decompress', type=str)
     parser.add_argument('--dump', help='hex dump of compressed data', action='store_true')
     parser.add_argument('--verbose', '-v', action='count')
-    parser.add_argument('--debug', action='store_true')
-    parser.add_argument('--rawfile', action='store_true')
-    parser.add_argument('--nooutput', '-n', action='store_true')
+    parser.add_argument('--debug', action='store_true', help="show all compression opcodes")
+    parser.add_argument('--rawfile', action='store_true', help="file contains only the q6zip section")
+    parser.add_argument('--nooutput', '-n', action='store_true', help="don't output decompressed data")
     parser.add_argument('--output', type=str, help='Save output to file')
 
+# TODO: automatically determine dictsize
     parser.add_argument('--dictsize', '-d', help='size of the dictionary in words', type=str, default='0x4400')
     parser.add_argument('--dictfile', '-D', help='load dict from', type=str)
     parser.add_argument('--lookback', help='lookback depth', type=str, default='8')
+# TODO: automatically determine skipheader
     parser.add_argument('--skipheader', help='number of items with extra skip header', type=str, default='0xf7a') # for quectel
 
     parser.add_argument('--dict1', help='where is dict1', type=str)
@@ -572,9 +585,11 @@ def main():
             if args.rawfile:
                 processrawfile(fh, args)
             elif args.dict1 and args.dict2:
-                rawuncomp(fh, args)
+                decompresssingle(fh, args)
             else:
                 processelffile(fh, args)
+    else:
+        print("no inpput specified: either --hex or elffile")
 
 if __name__=="__main__":
     main()
