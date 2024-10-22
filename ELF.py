@@ -5,6 +5,9 @@ Author: Willem Hengeveld <itsme@gsmk.de>
 """
 import struct
 
+def roundup(a, b):
+    return ((a-1)|(b-1)) + 1
+
 class Reader:
     """
     Architecture dependent ELF header value reader
@@ -315,6 +318,9 @@ class Header:
         # also returns segment for address just one beyond the last byte.
         found = None
         for seg in sorted(self.pgm, key=lambda x: x.vaddr):
+            # make sure we use the main seg while recalculating 
+            # file offsets, in recalcoffsets
+            if not seg.fileoffset and seg.type > 1: continue
             if seg.hasvaddr(vofs) or seg.isvend(vofs):
                 found = seg
         return found
@@ -331,6 +337,7 @@ class Header:
         # returns highest segment containing this address.
         # also returns segment for address just one beyond the last byte.
         for seg in sorted(self.pgm, key=lambda x: x.paddr):
+            if not seg.fileoffset and seg.type > 1: continue
             if seg.haspaddr(pofs) or seg.ispend(pofs):
                 found = seg
         return found
@@ -373,14 +380,21 @@ class Header:
     def recalcoffsets(self):
         # recalculate file offsets, taking into account sections which have grown/shrunk.
 
-        filedelta = 0
-        prevend = None
+        roundedend = 0
 
+        # first calc offsets for NULL and LOAD segments
         for seg in sorted(self.pgm, key=lambda seg : seg.fileoffset):
-            if prevend and seg.fileoffset <= prevend:
-                seg.fileoffset = ((prevend+0x1000) // 0x1000) * 0x1000
+            if seg.type <= 1:  # LOAD
+                seg.fileoffset = roundup(roundedend, seg.align or 0x1000)
+                roundedend = roundup(seg.fileoffset + seg.filesize, seg.align or 0x1000)
+            else:
+                seg.fileoffset = 0
 
-            prevend = seg.fileoffset + seg.filesize
+        # then readjust INTERP and DYNAMIC, which fall inside already existing segs.
+        for i, seg in enumerate(self.pgm):
+            if seg.type > 1:
+                print(f"T{seg.type} v{seg.vaddr:08x} o: {seg.fileoffset:08x} -> {self.virt2file(seg.vaddr):08x}")
+                seg.fileoffset = self.virt2file(seg.vaddr)
 
     def __repr__(self):
         return "ELF %d,%d,%d,%d,%d\n" % ( self.intsize, self.endianness, self.elfversion1, self.abitype, self.abiversion )   + \
