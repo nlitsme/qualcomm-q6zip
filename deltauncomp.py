@@ -136,7 +136,7 @@ class DeltaDecompressor:
         self.anchorbits = anchorbits
         self.debug = False
 
-    def decompress(self, compressed):
+    def decompress(self, compressed, MAXOUT=0x400):
         """
         Decompresses data from a byte array `compressed`, returning the uncompressed data bytes.
         """
@@ -156,7 +156,7 @@ class DeltaDecompressor:
 
         a = ''
         try:
-            while out.len() < 0x400:
+            while out.len() < MAXOUT:
                 if self.debug:
                     a = "{}:[{}] - ".format(curanchor, ','.join(f"{_:08x}" for _ in __anchors))
                 code = bits.get(2)
@@ -243,7 +243,7 @@ def processelffile(fh, args):
         print("%08x: npages=%d, ver=0x%04x" % (args.offset, npages, version))
         print("%08x: ptrlist" % (args.offset+4))
         print("%08x: compressed data" % (args.offset+4+4*npages))
-        for i, (ofs, nextofs) in enumerate(zip(ptrs, ptrs[1:]+(dataend,))):
+        for i, (ofs, nextofs) in enumerate(zip(ptrs, ptrs[1:]+[dataend,])):
             fh.seek(elf.virt2file(ofs))
             cdata = fh.read(nextofs-ofs)
 
@@ -263,7 +263,7 @@ def processelffile(fh, args):
 
         C.debug = args.debug
 
-        for i, (ofs, nextofs) in enumerate(zip(ptrs, ptrs[1:]+(dataend,))):
+        for i, (ofs, nextofs) in enumerate(zip(ptrs, ptrs[1:]+[dataend,])):
             fh.seek(elf.virt2file(ofs))
             cdata = fh.read(nextofs-ofs)
 
