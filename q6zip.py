@@ -6,6 +6,18 @@ Author: Willem Hengeveld <itsme@gsmk.de>
 TODO: add code to compress entire files.
 TODO: automatically add 'break' position information.
 
+entries with breaks have two 'metadata' words:
+
+    lastseq0:10, bitsleft0:6, indelta0:10, outdelta0:6
+    lastseq1:10, bitsleft1:6, indelta1:10, outdelta1:6
+
+where the 'lastseq' fields are always -1
+    the first break is at in-pos:  word:indelta0, bit:32-bitsleft0,  and out-pos: outdelta0
+    the second break is at in-pos:  word:indelta0+indelta1, bit:32-bitsleft1,  and out-pos: 0x200+outdelta0+outdelta1
+
+the break is always inserted after a complete hexagon instruction packet.
+  -> with PP bits either 00(duplex) or 11(end)
+
 """
 from __future__ import division, print_function
 from dataclasses import dataclass
@@ -240,7 +252,7 @@ class LookbackMask(Operation):
 class Mask(Operation):
     """
     Construct in one of the following ways:
-    Mask(        0b0011010, 7,  6, 8, 0,16),              # MATCH_6N_2x4_SQ1   out.copybits(lastOut, masked,  8,16)   or END_BLOCK or END_BLOCK
+    Mask(        0b0011010, 7,  6, 8, 0,16),              # MATCH_6N_2x4_SQ1   out.copybits(lastOut, masked,  8,16)   or END_BLOCK
     Mask(        0b1011010, 7,  5, 8, 0, 8),              # MATCH_6N_2x2_SQ1   out.copybits(lastOut, masked,  8, 8)
     Mask(            0b110, 3,  2, 8, 0, 0),              # MATCH_6N_2x0_SQ1   out.copybits(lastOut, masked,  8, 0)
     Mask(          0b11101, 5,  8,12, 0, 0),              # MATCH_5N_3x0_SQ1   out.copybits(lastOut, masked, 12, 0)
@@ -391,6 +403,9 @@ class Q6Zipper:
                 if self.debug:
                     print(f"    [{inp.pos:4x}] {len(out.data):4x}:{out.bitpos:2d}  {word:08x} ({self.lastOut:3d}) {op}")
 
+        # the final break
+        op = Break()
+        op.output(out)
         out.flush()
 
         return out.data
