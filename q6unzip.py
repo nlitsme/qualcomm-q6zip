@@ -167,7 +167,7 @@ class Q6Unzipper:
         self.DICT1_BITS = bitlog(len(dict1))
         self.DICT2_BITS = bitlog(len(dict2))
 
-    def decompress(self, compressed):
+    def decompress(self, compressed, MAXOUT=0x400):
         """
         Decompresses data from a byte array `compressed`, returning the uncompressed data bytes.
         """
@@ -186,7 +186,7 @@ class Q6Unzipper:
                 pass
 
         try:
-            while out.len()<0x400:
+            while out.len() <= MAXOUT:
                 op1 = bits.get(3)
                 if op1 == 0:  # MATCH_6N_2x0_SQ0 set lastout, byte from stream
                     lastOut = bits.get(self.LB_BITS) - (1<<self.LB_BITS)
@@ -232,6 +232,8 @@ class Q6Unzipper:
                                 log(f"mask @16 m:{masked:02x}")
                             else:
                                 log("break")
+                                if out.len() >= MAXOUT:
+                                    break
                 elif op1 == 3: # NO_MATCH
                     masked = bits.get(32)
                     out.addword(masked)
@@ -322,6 +324,7 @@ def getchunkmeta(value):
 
     return Meta(signed(bits[0], 10), bits[1], bits[2], signed(bits[3], 6))
 
+
 def processrawfile(fh, args):
     """
     decompresses a .elf section saved to a separate file,
@@ -403,11 +406,11 @@ def processrawfile(fh, args):
                     print(f"skipheader: {cdata[:8].hex()}")
                 cdata = cdata[8:]
 
-            uncomp = C.decompress(bytes2intlist(cdata))
+            uncomp = C.decompress(bytes2intlist(cdata), args.maxout)
             udata = intlist2bytes(uncomp)
 
             if args.verbose:
-                print("%08x: %04x" % (ofs, len(udata)))
+                print("%08x: %04x -> %04x" % (ofs, size, len(udata)))
                 if args.verbose>1:
                     print("        : %s" % cdata.hex())
                     print("        : %s" % udata.hex())
@@ -428,17 +431,17 @@ def processhex(hexstr, args):
     C = Q6Unzipper(dict1, dict2, args.lookback)
     C.debug = args.debug
 
-    uncomp = C.decompress(bytes2intlist(data))
+    uncomp = C.decompress(bytes2intlist(data), args.maxout)
     udata = intlist2bytes(uncomp)
 
     print(udata.hex())
 
 
-
 def processelffile(fh, args):
+    baseofs = args.dictoffset
     elf = ELF.read(fh)
 
-    fh.seek(elf.virt2file(args.offset))
+    fh.seek(elf.virt2file(baseofs))
 
     npages, version = struct.unpack("<HH", fh.read(4))
 
@@ -447,20 +450,20 @@ def processelffile(fh, args):
     dict2 = bytes2intlist(fh.read(dict2size*4))
 
     ptrs = bytes2intlist(fh.read(npages*4))
-    datastart = args.offset + 4 + args.dictsize*4 + npages*4
-    dataend = elf.virtend(args.offset)
-    
+    datastart = baseofs + 4 + args.dictsize*4 + npages*4
+    dataend = elf.virtend(baseofs)
+
     if args.verbose:
-        print("p0 = %08x,  datastart=%08x, filepos=%08x" % (ptrs[0], datastart , fh.tell()))
+        print("p0 = %08x,  datastart=%08x, filepos=%08x" % (ptrs[0], datastart, fh.tell()))
 
     if args.dump:
-        print("%08x: npages=%d, ver=0x%04x" % (args.offset, npages, version))
-        print("%08x: dict1 - %d words" % (args.offset+4, dict1size))
-        print("%08x: dict2 - %d words" % (args.offset+4+4*dict1size, dict2size))
-        print("%08x: ptrlist" % (args.offset+4+4*dict1size+4*dict2size))
-        print("%08x: compressed data" % (args.offset+4+4*dict1size+4*dict2size+4*npages))
+        print("%08x: npages=%d, ver=0x%04x" % (baseofs, npages, version))
+        print("%08x: dict1 - %d words" % (baseofs+4, dict1size))
+        print("%08x: dict2 - %d words" % (baseofs+4+4*dict1size, dict2size))
+        print("%08x: ptrlist" % (baseofs+4+4*dict1size+4*dict2size))
+        print("%08x: compressed data" % (baseofs+4+4*dict1size+4*dict2size+4*npages))
         for i, (ofs, nextofs) in enumerate(zip(ptrs, ptrs[1:]+[dataend])):
-            if args.offset and args.offset!=ofs:
+            if baseofs and baseofs!=ofs:
                 continue
             fh.seek(elf.virt2file(ofs))
             cdata = fh.read(nextofs-ofs)
@@ -490,14 +493,18 @@ def processelffile(fh, args):
         C = Q6Unzipper(dict1, dict2, args.lookback)
         C.debug = args.debug
 
-        for i, (ofs, nextofs) in enumerate(zip(ptrs, ptrs[1:]+(dataend,))):
+        for i, (ofs, nextofs) in enumerate(zip(ptrs, ptrs[1:]+[dataend])):
+            if args.offset and args.offset!=ofs:
+                continue
             fh.seek(elf.virt2file(ofs))
             cdata = fh.read(nextofs-ofs)
 
             if i < args.skipheader:
+                if args.verbose:
+                    print(f"skipheader: {cdata[:8].hex()}")
                 cdata = cdata[8:]
 
-            uncomp = C.decompress(bytes2intlist(cdata))
+            uncomp = C.decompress(bytes2intlist(cdata), args.maxout)
             udata = intlist2bytes(uncomp)
 
             if args.verbose:
@@ -508,6 +515,7 @@ def processelffile(fh, args):
             if ofh:
                 ofh.flush()
                 ofh.write(udata)
+
 
 def decompresssingle(fh, args):
     """
@@ -535,7 +543,7 @@ def decompresssingle(fh, args):
     fh.seek(elf.virt2file(args.offset))
     cdata = fh.read(args.size)
 
-    uncomp = C.decompress(bytes2intlist(cdata))
+    uncomp = C.decompress(bytes2intlist(cdata), args.maxout)
     udata = intlist2bytes(uncomp)
 
     print("comp    : %s" % cdata.hex())
@@ -552,10 +560,12 @@ def main():
     parser.add_argument('--rawfile', action='store_true', help="file contains only the q6zip section")
     parser.add_argument('--nooutput', '-n', action='store_true', help="don't output decompressed data")
     parser.add_argument('--output', type=str, help='Save output to file')
+    parser.add_argument('--maxout', type=str, help='how much data to decompress', default='0x400')
 
 # TODO: automatically determine dictsize
     parser.add_argument('--dictsize', '-d', help='size of the dictionary in words', type=str, default='0x4400')
     parser.add_argument('--dictfile', '-D', help='load dict from', type=str)
+    parser.add_argument('--dictoffset', '-O', help='load dict from', type=str)
     parser.add_argument('--lookback', help='lookback depth', type=str, default='8')
 # TODO: automatically determine skipheader
     parser.add_argument('--skipheader', help='number of items with extra skip header', type=str, default='0xf7a') # for quectel
@@ -573,10 +583,14 @@ def main():
         args.size = int(args.size, 0)
     if args.dictsize is not None:
         args.dictsize = int(args.dictsize , 0)
+    if args.dictoffset is not None:
+        args.dictoffset = int(args.dictoffset , 0)
     if args.lookback is not None:
         args.lookback = int(args.lookback , 0)
     if args.skipheader is not None:
         args.skipheader = int(args.skipheader , 0)
+
+    args.maxout = int(args.maxout, 0)
 
     if args.hex:
         processhex(args.hex, args)
