@@ -463,7 +463,7 @@ def processelffile(fh, args):
         print("%08x: ptrlist" % (baseofs+4+4*dict1size+4*dict2size))
         print("%08x: compressed data" % (baseofs+4+4*dict1size+4*dict2size+4*npages))
         for i, (ofs, nextofs) in enumerate(zip(ptrs, ptrs[1:]+[dataend])):
-            if baseofs and baseofs!=ofs:
+            if args.offset and args.offset!=ofs:
                 continue
             fh.seek(elf.virt2file(ofs))
             cdata = fh.read(nextofs-ofs)
