@@ -284,9 +284,9 @@ class Header:
         shnum = rd.uint16()              # 30/3c
         self.shstrndx = rd.uint16()      # 32/3e
 
-        if phentsize != self.ProgramHeader.size(rd):
+        if phnum and phentsize != self.ProgramHeader.size(rd):
             print("WARNING: phentsize = %d, expected %d" % (phentsize, self.ProgramHeader.size(rd)))
-        if shentsize != self.SectionHeader.size(rd):
+        if shnum and shentsize != self.SectionHeader.size(rd):
             print("WARNING: shentsize = %d, expected %d" % (shentsize, self.SectionHeader.size(rd)))
 
 
