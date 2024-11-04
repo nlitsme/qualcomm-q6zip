@@ -8,6 +8,9 @@ Author: Willem Hengeveld <itsme@gsmk.de>
 #   dlpager_load_virtual_page decides to call ..._rx
 # https://github.com/EchoQian/PhoebeM/blob/master/modem_proc/core/kernel/dlpager/src/q6zip_uncompress.c
 # https://github.com/EchoQian/PhoebeM/blob/master/modem_proc/core/kernel/dlpager/compressor/compress_process.py
+
+# TODO: add option to decompress a section by ptr index.
+
 from __future__ import division, print_function
 from dataclasses import dataclass
 import sys
@@ -178,9 +181,10 @@ class Q6Unzipper:
 
         if self.debug:
             def log(msg):
-                print("    [%4x] %4x:%2d  %08x (%3d) %s" % (out.len(), bits.pos, bits.bitpos, out.data[-1] if out.data else 0, lastOut, msg))
+                word = out.data[-1] if out.data else 0
+                print(f"    [{out.len():04x}] {word:08x} {bits.pos:4x}:{bits.bitpos:2x}  ({lastOut:3d}) {msg}")
 
-            print("    outofs  ofs:bit  outdata last action")
+            print("    outofs  outdata  ofs:bit last action")
         else:
             def log(msg):
                 pass
@@ -372,7 +376,7 @@ def processrawfile(fh, args):
 
             cdata = bytes2intlist(cdata)
 
-            if i < args.skipheader:
+            if args.skipheader is None or i < args.skipheader:
                 a0 = getchunkmeta(cdata[0])
                 # (-1, 1..32, 0..4, 1..4)
                 a1 = getchunkmeta(cdata[1])
@@ -401,10 +405,18 @@ def processrawfile(fh, args):
             fh.seek(ofs)
             cdata = fh.read(size)
 
-            if i < args.skipheader:
+            if args.skipheader is None or i < args.skipheader:
                 if args.verbose:
-                    print(f"skipheader: {cdata[:8].hex()}")
+                    m = struct.unpack("<2L", cdata[:8])
+                    a0 = getchunkmeta(m[0]) # (-1, 1..32, 0..4, 1..4)
+                    a1 = getchunkmeta(m[1]) # (-1, 1..32, *, -4..2)
+                    print(f"[{i:04x}] {ofs:08x}-{ofs+size:08x}: {cdata[:8].hex()} ({a0}) ({a1})")
+
+
                 cdata = cdata[8:]
+            else:
+                if args.verbose:
+                    print(f"[{i:04x}] {ofs:08x}-{ofs+size:08x}")
 
             uncomp = C.decompress(bytes2intlist(cdata), args.maxout)
             udata = intlist2bytes(uncomp)
@@ -470,7 +482,7 @@ def processelffile(fh, args):
 
             cdata = bytes2intlist(cdata)
 
-            if i < args.skipheader:
+            if args.skipheader is None or i < args.skipheader:
                 a0 = getchunkmeta(cdata[0])
                 # (-1, 1..32, 0..4, 1..4)
                 a1 = getchunkmeta(cdata[1])
@@ -499,10 +511,16 @@ def processelffile(fh, args):
             fh.seek(elf.virt2file(ofs))
             cdata = fh.read(nextofs-ofs)
 
-            if i < args.skipheader:
+            if args.skipheader is None or i < args.skipheader:
                 if args.verbose:
-                    print(f"skipheader: {cdata[:8].hex()}")
+                    m = struct.unpack("<2L", cdata[:8])
+                    a0 = getchunkmeta(m[0]) # (-1, 1..32, 0..4, 1..4)
+                    a1 = getchunkmeta(m[1]) # (-1, 1..32, *, -4..2)
+                    print(f"[{i:04x}] {ofs:08x}-{ofs+size:08x}: {cdata[:8].hex()} ({a0}) ({a1})")
                 cdata = cdata[8:]
+            else:
+                if args.verbose:
+                    print(f"[{i:04x}] {ofs:08x}-{ofs+size:08x}")
 
             uncomp = C.decompress(bytes2intlist(cdata), args.maxout)
             udata = intlist2bytes(uncomp)
@@ -568,7 +586,7 @@ def main():
     parser.add_argument('--dictoffset', '-O', help='load dict from', type=str)
     parser.add_argument('--lookback', help='lookback depth', type=str, default='8')
 # TODO: automatically determine skipheader
-    parser.add_argument('--skipheader', help='number of items with extra skip header', type=str, default='0xf7a') # for quectel
+    parser.add_argument('--skipheader', help='number of items with extra skip header', type=str)
 
     parser.add_argument('--dict1', help='where is dict1', type=str)
     parser.add_argument('--dict2', help='where is dict2', type=str)

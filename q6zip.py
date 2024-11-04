@@ -22,6 +22,7 @@ the break is always inserted after a complete hexagon instruction packet.
 from __future__ import division, print_function
 from dataclasses import dataclass
 from abc import ABC, abstractmethod
+from collections import defaultdict
 import sys
 import re
 import struct
@@ -43,7 +44,7 @@ def bitlog(n):
 
 class WordStreamReader:
     """
-    Output stream which can duplicate values pushed to it at an earlier time.
+    simple word array reader.
     """
     def __init__(self, data):
         self.data = data
@@ -176,6 +177,7 @@ class Dict(Operation):
 
     def matches(self, word, zipper, indata):
         #print(f"matching dict l={self.arglen} to {word:08x}")
+        # TODO: improve on the linear search.
         for i, w in enumerate(zipper.getdict(self.arglen)):
             #print(f" testing {w:08x} @{i:04x}")
             if w==word:
@@ -311,15 +313,16 @@ class Break(Operation):
         return f"break"
 
 class Q6Zipper:
-    def __init__(self, dict1, dict2, lookback=8):
-        self.debug = False
-        self.dict1 = dict1
-        self.dict2 = dict2
+    def __init__(self, args):
+        self.debug = args.debug
+        self.dict1 = None
+        self.dict2 = None
 
-        self.LB_BITS = lookback
+        self.LB_BITS = args.lookback
 
-        self.DICT1_BITS = bitlog(len(dict1))
-        self.DICT2_BITS = bitlog(len(dict2))
+        self.DICT1_BITS = args.dict1bits
+        self.DICT2_BITS = args.dict2bits
+
         """  order used by qualcomm
          1   3 MATCH_8N_SQ1      seq
          2  11 MATCH_6N_2x0_SQ1  mask @0 m:nn
@@ -358,13 +361,21 @@ class Q6Zipper:
         ]
 
         # sort by bit-size
-        #self.ops = sorted(self.ops, key=lambda e:e.bitsize())
-        self.ops = sorted(self.ops, key=lambda e:e.qcomorder)
-        #for op in self.ops: print(f"{op.bitsize()} {op}")
-
-        self.lastOut = -1    # the compressor state.
+        if args.qcomorder:
+            self.ops = sorted(self.ops, key=lambda e:e.qcomorder)
+        else:
+            self.ops = sorted(self.ops, key=lambda e:e.bitsize())
 
         self.breakpos0 = self.breakpos1 = None
+
+        self.reset()
+
+    def reset(self):
+        self.lastOut = -1    # the compressor state.
+
+    def loaddict(self, dict1, dict2):
+        self.dict1 = dict1
+        self.dict2 = dict2
 
     def getdict(self, bits):
         if bits == self.DICT1_BITS: return self.dict1
@@ -378,34 +389,46 @@ class Q6Zipper:
         xref = defaultdict(int)
         for w in data:
             xref[w] += 1
-        sortedxref = list(sorted(xref.items(), key=lambda kv: (kv[1], kv[0])))
+        sortedxref = list(sorted(xref.items(), key=lambda kv: (-kv[1], kv[0])))
         self.dict1 = [kv[0] for kv in sortedxref[:2**self.DICT1_BITS]]
         sortedxref = sortedxref[2**self.DICT1_BITS:]
         self.dict2 = [kv[0] for kv in sortedxref[:2**self.DICT2_BITS]]
 
     def compress(self, data):
+        """
+        input: words
+        returns: bytes
+        """
         inp = WordStreamReader(data)
         out = BitStreamWriter()
  
+        word = None
+        if self.debug:
+            def log(obj):
+                print(f"    [{inp.pos:04x}] {word:08x} {len(out.data):4x}:{out.bitpos:2x} ({self.lastOut:3d}) {obj}")
+            print("    outofs  outdata  ofs:bit last action")
+        else:
+            def log(obj):
+                pass
+
         while not inp.eof():
             word = inp.nextword()
  
             for op in self.ops:
                 if m := op.matches(word, self, inp):
                     m.output(self, out)
-                    if self.debug:
-                        print(f"    [{inp.pos:4x}] {len(out.data):4x}:{out.bitpos:2d}  {word:08x} ({self.lastOut:3d}) {m}")
+                    log(m)
                     break
             if self.needbreak(inp, out):
                 op = Break()
                 op.output(out)
 
-                if self.debug:
-                    print(f"    [{inp.pos:4x}] {len(out.data):4x}:{out.bitpos:2d}  {word:08x} ({self.lastOut:3d}) {op}")
+                log(op)
 
         # the final break
         op = Break()
         op.output(out)
+        log(op)
         out.flush()
 
         return out.data
@@ -418,6 +441,78 @@ class Q6Zipper:
             self.breakpos1 = None
             return True
 
+    def compresswithbreaks(self, data):
+        """
+        input: words
+        returns: [words...], bytes
+
+        note that compresswithbreaks must only be used on code sections.
+        data will not work, because this required the code to have hexagon code packets.
+
+        meta:
+            [a.wrd]  a.ofs:a.bit  -> ( 20-a.bit, a.ofs,       a.wrd)
+            [b.wrd]  b.ofs:b.bit  -> ( 20-b.bit, b.ofs-a.ofs, b.wrd-a.wrd-200)
+        """
+        if type(data)==bytes:
+            raise Exception("need a word-array")
+        inp = WordStreamReader(data)
+        out = BitStreamWriter()
+        meta = []
+ 
+        word = None
+        if self.debug:
+            def log(obj):
+                print(f"    [{inp.pos:04x}] {word:08x} {len(out.data):4x}:{out.bitpos:2x} ({self.lastOut:3d}) {obj}")
+            print("    outofs  outdata  ofs:bit last action")
+        else:
+            def log(obj):
+                pass
+
+        needbreak = True
+        while not inp.eof():
+            word = inp.nextword()
+            if inp.pos==0x200 and len(meta)==1:
+                needbreak = True
+                log("wantbreak")
+ 
+            for op in self.ops:
+                if m := op.matches(word, self, inp):
+                    m.output(self, out)
+                    log(m)
+                    break
+            else:
+                print("?? there should always be a match")
+
+            if (word>>14)&3 in (0, 3):
+                if needbreak:
+                    op = Break()
+                    op.output(out)
+                    log(op)
+
+                    prevout = meta[-1][1] if meta else 0
+                    previn = meta[-1][2]+0x200 if meta else 0
+                    meta.append((32-out.bitpos, len(out.data)-prevout, inp.pos-previn))
+                    needbreak = False
+
+        # the final break
+        op = Break()
+        op.output(out)
+        log(op)
+
+        out.flush()
+
+        def makemetaword(lastseq, bitsleft, indelta, outdelta):
+            #print(f"m: ({lastseq:4x},{bitsleft:2x},{indelta:4x},{outdelta:2x}) -> ", end="")
+            if lastseq<0: lastseq += 1024
+            if outdelta<0: outdelta += 64
+            m = (lastseq|(bitsleft<<10)) | ((indelta|(outdelta<<10))<<16)
+            #print(f"{m:08x}")
+            return m
+
+        meta = [makemetaword(-1, bitsleft, indelta, outdelta) for bitsleft, indelta, outdelta in meta]
+
+        return meta, out.data
+ 
 def main():
     parser = argparse.ArgumentParser(description='Compress data using q6zip compression')
     parser.add_argument('--offset', '-o', help='Which section to compress', type=str, default='0')
@@ -425,9 +520,11 @@ def main():
     parser.add_argument('--dict1', help='offset:length to dict1', type=str, default='4:0x1000')
     parser.add_argument('--dict2', help='offset:length to dict2', type=str, default='0x1004:0x10000')
     parser.add_argument('--dictfile', help='load dict from', type=str)
+    parser.add_argument('--lookback', help='lookback depth', type=int, default=8)
     parser.add_argument('--breakpos0', help='load dict from', type=str)
     parser.add_argument('--breakpos1', help='load dict from', type=str)
     parser.add_argument('--debug', action='store_true', help="show all compression opcodes")
+    parser.add_argument('--qcomorder', action='store_true', help="prioritize opcodes in qualcomm order.")
 
     parser.add_argument('srcfile', help='Which file to process', type=str)
     args = parser.parse_args()
@@ -443,17 +540,19 @@ def main():
 
     # fileoffset : bytesize
     if m := re.match(r'(\w+):(\w+)', args.dict1):
-        args.dict1 = int(m[1],0), int(m[2],0)
+        args.dict1ofs = int(m[1],0)
+        args.dict1bits = bitlog(int(m[2],0))
     if m := re.match(r'(\w+):(\w+)', args.dict2):
-        args.dict2 = int(m[1],0), int(m[2],0)
+        args.dict2ofs = int(m[1],0)
+        args.dict2bits = bitlog(int(m[2],0))
 
     with open(args.dictfile, "rb") as fh:
-        fh.seek(args.dict1[0])
-        dict1 = fh.read(args.dict1[1])
+        fh.seek(args.dict1ofs)
+        dict1 = fh.read(2**args.dict1bits)
         dict1 = struct.unpack(f"<{len(dict1)//4}L", dict1)
 
-        fh.seek(args.dict2[0])
-        dict2 = fh.read(args.dict2[1])
+        fh.seek(args.dict2ofs)
+        dict2 = fh.read(2**args.dict2bits)
         dict2 = struct.unpack(f"<{len(dict2)//4}L", dict2)
         
     with open(args.srcfile, "rb") as fh:
@@ -462,8 +561,8 @@ def main():
 
         data = struct.unpack(f"<{len(data)//4}L", data)
 
-        C = Q6Zipper(dict1, dict2)
-        C.debug = args.debug
+        C = Q6Zipper(args)
+        C.loaddict(dict1, dict2)
 
         if args.breakpos0 is not None:
             C.breakpos0 = args.breakpos0
