@@ -142,21 +142,21 @@ class Q6Unzipper:
 
                <entry1:10>      100   |13|  DICT1_MATCH       dict1 nnn                out.addword(self.dict1[entry])
                <entry2:12>     0101   |16|  DICT2_MATCH       dict1 nnnn               out.addword(self.dict2[entry])
-               <lastout:9>      001   |12|  MATCH_8N_SQ0      lookback  lb=nnn         out.copyword(lastOut)
-                                111   | 3|  MATCH_8N_SQ1      seq                      out.copyword(lastOut)
                <dword:32>       011   |35|  NO_MATCH          lit nnnnnnnn             out.addword(masked)
                                                                                        
+                                111   | 3|  MATCH_8N_SQ1      seq                      out.copyword(lastOut)
    <masked:8>               0011010   |15|  MATCH_6N_2x4_SQ1  mask @16 m:nn            out.copybits(lastOut, masked, 8, 16)   or END_BLOCK
    <masked:8>               1011010   |15|  MATCH_6N_2x2_SQ1  mask @8 m:nn             out.copybits(lastOut, masked, 8, 8)
    <masked:8>                   110   |11|  MATCH_6N_2x0_SQ1  mask @0 m:nn             out.copybits(lastOut, masked, 8, 0)
    <masked:12>                11101   |17|  MATCH_5N_3x0_SQ1  mask @0 m:nnn            out.copybits(lastOut, masked, 12, 0)
    <masked:16>               001010   |22|  MATCH_4N_4x0_SQ1  mask @0 m:nnnn           out.copybits(lastOut, masked, 16, 0)
 
-   <masked:8>  <lastout:9>   101010   |23|  MATCH_6N_2x4_SQ0  mask @16 m:nn  lb=nnn    out.copybits(lastOut, masked, 8, 16)
-   <masked:8>  <lastout:9>   111010   |23|  MATCH_6N_2x2_SQ0  mask @8 m:nn  lb=nnn     out.copybits(lastOut, masked, 8, 8)
-   <masked:8>  <lastout:9>      000   |20|  MATCH_6N_2x0_SQ0  mask @0 m:nn  lb=nnn     out.copybits(lastOut, masked, 8, 0)
-   <masked:12> <lastout:9>     0010   |25|  MATCH_5N_3x0_SQ0  mask @0 m:nnn  lb=nnn    out.copybits(lastOut, masked, 12, 0)
-   <masked:16> <lastout:9>    01101   |30|  MATCH_4N_4x0_SQ0  mask @0 m:nnnn  lb=nnn   out.copybits(lastOut, masked, 16, 0)
+               <lastout:8>      001   |12|  MATCH_8N_SQ0      lookback  lb=nnn         out.copyword(lastOut)
+   <masked:8>  <lastout:8>   101010   |23|  MATCH_6N_2x4_SQ0  mask @16 m:nn  lb=nnn    out.copybits(lastOut, masked, 8, 16)
+   <masked:8>  <lastout:8>   111010   |23|  MATCH_6N_2x2_SQ0  mask @8 m:nn  lb=nnn     out.copybits(lastOut, masked, 8, 8)
+   <masked:8>  <lastout:8>      000   |20|  MATCH_6N_2x0_SQ0  mask @0 m:nn  lb=nnn     out.copybits(lastOut, masked, 8, 0)
+   <masked:12> <lastout:8>     0010   |25|  MATCH_5N_3x0_SQ0  mask @0 m:nnn  lb=nnn    out.copybits(lastOut, masked, 12, 0)
+   <masked:16> <lastout:8>    01101   |30|  MATCH_4N_4x0_SQ0  mask @0 m:nnnn  lb=nnn   out.copybits(lastOut, masked, 16, 0)
 
     """
     def __init__(self, dict1, dict2, lookback=8):
@@ -177,12 +177,15 @@ class Q6Unzipper:
         bits = BitStreamReader(compressed)
         out = WordStreamWriter()
 
-        lastOut = -1        #  this is the only state of the algorithm.
+        #  this is the only state of the algorithm.
+        #  always a negative number from -2**LB+1 .. -1
+        #  it is stored in the opcodes as  2^LB + lastOut
+        lastOut = -1
 
         if self.debug:
             def log(msg):
                 word = out.data[-1] if out.data else 0
-                print(f"    [{out.len():04x}] {word:08x} {bits.pos:4x}:{bits.bitpos:2x}  ({lastOut:3d}) {msg}")
+                print(f"    [{out.len():04x}] {word:08x} {bits.pos:4x}:{bits.bitpos:2x} ({lastOut:4d}) {msg}")
 
             print("    outofs  outdata  ofs:bit last action")
         else:
@@ -406,7 +409,7 @@ def processrawfile(fh, args):
             cdata = fh.read(size)
 
             if args.skipheader is None or i < args.skipheader:
-                if args.verbose:
+                if args.debug:
                     m = struct.unpack("<2L", cdata[:8])
                     a0 = getchunkmeta(m[0]) # (-1, 1..32, 0..4, 1..4)
                     a1 = getchunkmeta(m[1]) # (-1, 1..32, *, -4..2)
@@ -415,7 +418,7 @@ def processrawfile(fh, args):
 
                 cdata = cdata[8:]
             else:
-                if args.verbose:
+                if args.debug:
                     print(f"[{i:04x}] {ofs:08x}-{ofs+size:08x}")
 
             uncomp = C.decompress(bytes2intlist(cdata), args.maxout)
@@ -512,14 +515,14 @@ def processelffile(fh, args):
             cdata = fh.read(nextofs-ofs)
 
             if args.skipheader is None or i < args.skipheader:
-                if args.verbose:
+                if args.debug:
                     m = struct.unpack("<2L", cdata[:8])
                     a0 = getchunkmeta(m[0]) # (-1, 1..32, 0..4, 1..4)
                     a1 = getchunkmeta(m[1]) # (-1, 1..32, *, -4..2)
                     print(f"[{i:04x}] {ofs:08x}-{ofs+size:08x}: {cdata[:8].hex()} ({a0}) ({a1})")
                 cdata = cdata[8:]
             else:
-                if args.verbose:
+                if args.debug:
                     print(f"[{i:04x}] {ofs:08x}-{ofs+size:08x}")
 
             uncomp = C.decompress(bytes2intlist(cdata), args.maxout)
