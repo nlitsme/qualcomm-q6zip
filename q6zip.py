@@ -108,7 +108,10 @@ class Operation:
 
 class Sequential(Operation):
     """
-    Construct as: Sequential(      0b111, 3,  1, 0,  0),                # MATCH_8N_SQ1       out.copyword(lastOut)
+    Construct as:
+                      code, l, qc, m,  arglen
+    Sequential(      0b111, 3,  1, 0,  0),                # MATCH_8N_SQ1       out.copyword(lastOut)
+
     outputs op: 111
     When decompressing, repeats the previous outputted word.
     """
@@ -130,7 +133,10 @@ class Sequential(Operation):
 
 class Lookback(Operation):
     """
-    Construct as: Lookback(        0b001, 3,  3, 0, self.LB_BITS),      # MATCH_8N_SQ0       out.copyword(lastOut)
+    Construct as:
+                      code, l, qc, m,  arglen
+    Lookback(        0b001, 3,  3, 0, self.LB_BITS),      # MATCH_8N_SQ0       out.copyword(lastOut)
+
     outpus op: <lookback> 001
     When decompressing, repeats the word 'lookback' items back.
     """
@@ -148,17 +154,21 @@ class Lookback(Operation):
     def matches(self, word, zipper, indata):
         lbrange = 2**zipper.LB_BITS
         # 0 ..   pos-2-(2**LB-1)  ..   pos-2-0 [pos-1:word]
+        # TODO: improve on the linear search.
         for i in range(max(0, indata.pos-2-(lbrange-1)), indata.pos-1):
             if indata.data[i] == word:
                 return self.Match(self, lbrange-(indata.pos-1-i))
+
     def __repr__(self):
         return f"lookback"
 
 class Dict(Operation):
     """
     Construct in one of the following ways:
+                      code, l, qc, m,  arglen
     Dict(            0b100, 3,  4, 0, self.DICT1_BITS),   # DICT1_MATCH        out.addword(self.dict1[entry])
     Dict(           0b0101, 4,  7, 0, self.DICT2_BITS),   # DICT2_MATCH        out.addword(self.dict2[entry])
+
     outputs op: <index> {100|0101}
     When decompressing, inserts the word at the specified dictionary location.
     """
@@ -188,7 +198,10 @@ class Dict(Operation):
 
 class Literal(Operation):
     """
-    Construct as: Literal(         0b011, 3, 15, 0, 32),                # NO_MATCH           out.addword(masked)
+    Construct as:
+                      code, l, qc, m,  arglen
+    Literal(         0b011, 3, 15, 0, 32),                # NO_MATCH           out.addword(masked)
+
     outputs op: <word> 011
     When decompressing outputs the specifeid literal word.
     """
@@ -211,11 +224,13 @@ class Literal(Operation):
 class LookbackMask(Operation):
     """
     Construct in one of the following ways:
+                      code, l, qc, m,    arglen    bitofs
     LookbackMask( 0b101010, 6, 12, 8, self.LB_BITS,16),   # MATCH_6N_2x4_SQ0   out.copybits(lastOut, masked,  8,16)
     LookbackMask( 0b111010, 6, 11, 8, self.LB_BITS, 8),   # MATCH_6N_2x2_SQ0   out.copybits(lastOut, masked,  8, 8)
     LookbackMask(    0b000, 3,  9, 8, self.LB_BITS, 0),   # MATCH_6N_2x0_SQ0   out.copybits(lastOut, masked,  8, 0)
     LookbackMask(   0b0010, 4, 13,12, self.LB_BITS, 0),   # MATCH_5N_3x0_SQ0   out.copybits(lastOut, masked, 12, 0)
     LookbackMask(  0b01101, 5, 14,16, self.LB_BITS, 0),   # MATCH_4N_4x0_SQ0   out.copybits(lastOut, masked, 16, 0)
+
     outputs op: <masked> <lookback> {0010|101010|01101|111010|000}
 
     When decompressing, outputs the specified previous word, with the masked bits replaced with the 'mask' value.
@@ -254,11 +269,13 @@ class LookbackMask(Operation):
 class Mask(Operation):
     """
     Construct in one of the following ways:
+                      code, l, qc, m, a  bitofs
     Mask(        0b0011010, 7,  6, 8, 0,16),              # MATCH_6N_2x4_SQ1   out.copybits(lastOut, masked,  8,16)   or END_BLOCK
     Mask(        0b1011010, 7,  5, 8, 0, 8),              # MATCH_6N_2x2_SQ1   out.copybits(lastOut, masked,  8, 8)
     Mask(            0b110, 3,  2, 8, 0, 0),              # MATCH_6N_2x0_SQ1   out.copybits(lastOut, masked,  8, 0)
     Mask(          0b11101, 5,  8,12, 0, 0),              # MATCH_5N_3x0_SQ1   out.copybits(lastOut, masked, 12, 0)
     Mask(         0b001010, 6, 10,16, 0, 0),              # MATCH_4N_4x0_SQ1   out.copybits(lastOut, masked, 16, 0)
+
     outputs op: <masked> {11101|011010|001010|1011010|110}
 
     When decompressing, repeats the most recent value, with the masked bits replaced.
@@ -343,16 +360,16 @@ class Q6Zipper:
         self.ops = [    #   code clen   #  m arg  [bitpos]
             Dict(            0b100, 3,  4, 0, self.DICT1_BITS),   # DICT1_MATCH        out.addword(self.dict1[entry])
             Dict(           0b0101, 4,  7, 0, self.DICT2_BITS),   # DICT2_MATCH        out.addword(self.dict2[entry])
-            Lookback(        0b001, 3,  3, 0, self.LB_BITS),      # MATCH_8N_SQ0       out.copyword(lastOut)
-            Sequential(      0b111, 3,  1, 0,  0),                # MATCH_8N_SQ1       out.copyword(lastOut)
             Literal(         0b011, 3, 15, 0, 32),                # NO_MATCH           out.addword(masked)
 
+            Sequential(      0b111, 3,  1, 0, 0),                 # MATCH_8N_SQ1       out.copyword(lastOut)
             Mask(        0b0011010, 7,  6, 8, 0,16),              # MATCH_6N_2x4_SQ1   out.copybits(lastOut, masked,  8,16)   or END_BLOCK or END_BLOCK
             Mask(        0b1011010, 7,  5, 8, 0, 8),              # MATCH_6N_2x2_SQ1   out.copybits(lastOut, masked,  8, 8)
             Mask(            0b110, 3,  2, 8, 0, 0),              # MATCH_6N_2x0_SQ1   out.copybits(lastOut, masked,  8, 0)
             Mask(          0b11101, 5,  8,12, 0, 0),              # MATCH_5N_3x0_SQ1   out.copybits(lastOut, masked, 12, 0)
             Mask(         0b001010, 6, 10,16, 0, 0),              # MATCH_4N_4x0_SQ1   out.copybits(lastOut, masked, 16, 0)
 
+            Lookback(        0b001, 3,  3, 0, self.LB_BITS),      # MATCH_8N_SQ0       out.copyword(lastOut)
             LookbackMask( 0b101010, 6, 12, 8, self.LB_BITS,16),   # MATCH_6N_2x4_SQ0   out.copybits(lastOut, masked,  8,16)
             LookbackMask( 0b111010, 6, 11, 8, self.LB_BITS, 8),   # MATCH_6N_2x2_SQ0   out.copybits(lastOut, masked,  8, 8)
             LookbackMask(    0b000, 3,  9, 8, self.LB_BITS, 0),   # MATCH_6N_2x0_SQ0   out.copybits(lastOut, masked,  8, 0)
@@ -405,7 +422,7 @@ class Q6Zipper:
         word = None
         if self.debug:
             def log(obj):
-                print(f"    [{inp.pos:04x}] {word:08x} {len(out.data):4x}:{out.bitpos:2x} ({self.lastOut:3d}) {obj}")
+                print(f"    [{inp.pos:04x}] {word:08x} {len(out.data):4x}:{out.bitpos:2x} ({self.lastOut:4d}) {obj}")
             print("    outofs  outdata  ofs:bit last action")
         else:
             def log(obj):
@@ -462,7 +479,7 @@ class Q6Zipper:
         word = None
         if self.debug:
             def log(obj):
-                print(f"    [{inp.pos:04x}] {word:08x} {len(out.data):4x}:{out.bitpos:2x} ({self.lastOut:3d}) {obj}")
+                print(f"    [{inp.pos:04x}] {word:08x} {len(out.data):4x}:{out.bitpos:2x} ({self.lastOut:4d}) {obj}")
             print("    outofs  outdata  ofs:bit last action")
         else:
             def log(obj):
@@ -541,18 +558,18 @@ def main():
     # fileoffset : bytesize
     if m := re.match(r'(\w+):(\w+)', args.dict1):
         args.dict1ofs = int(m[1],0)
-        args.dict1bits = bitlog(int(m[2],0))
+        args.dict1bits = bitlog(int(m[2],0))-2
     if m := re.match(r'(\w+):(\w+)', args.dict2):
         args.dict2ofs = int(m[1],0)
-        args.dict2bits = bitlog(int(m[2],0))
+        args.dict2bits = bitlog(int(m[2],0))-2
 
     with open(args.dictfile, "rb") as fh:
         fh.seek(args.dict1ofs)
-        dict1 = fh.read(2**args.dict1bits)
+        dict1 = fh.read(4*2**args.dict1bits)
         dict1 = struct.unpack(f"<{len(dict1)//4}L", dict1)
 
         fh.seek(args.dict2ofs)
-        dict2 = fh.read(2**args.dict2bits)
+        dict2 = fh.read(4*2**args.dict2bits)
         dict2 = struct.unpack(f"<{len(dict2)//4}L", dict2)
         
     with open(args.srcfile, "rb") as fh:
