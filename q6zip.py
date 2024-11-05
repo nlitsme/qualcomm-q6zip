@@ -50,6 +50,11 @@ class WordStreamReader:
         self.data = data
         self.pos = 0
 
+        # mask => word => abspos
+        self.lookup = {}
+
+        self.addmask(0)
+
     def len(self):
         return len(self.data)
 
@@ -57,8 +62,31 @@ class WordStreamReader:
         return self.pos == len(self.data)
 
     def nextword(self):
+        if self.pos:
+            # add previous word to the index.
+            self.addtoindex(self.data[self.pos-1], self.pos-1)
+
+        # return current word and advance position.
+        w = self.data[self.pos]
         self.pos += 1
-        return self.data[self.pos-1]
+        return w
+
+    def addmask(self, mask):
+        self.lookup[mask] = {}
+
+    def addtoindex(self, word, abspos):
+        for m, ix in self.lookup.items():
+            ix[word & ~m] = abspos
+
+    def findlookback(self, word, mask, lbrange):
+        abspos = self.lookup[mask].get(word & ~mask)
+        if abspos is not None:
+            delta = abspos - self.pos + 1
+            if delta >= 0:
+                print(f"unexpected positive delta: w={word:x}, m={mask:x}, abspos={abspos:x}, pos={self.pos:x}")
+            if delta <= -lbrange:
+                return
+            return delta + lbrange
 
 class BitStreamWriter:
     """
@@ -153,11 +181,9 @@ class Lookback(Operation):
 
     def matches(self, word, zipper, indata):
         lbrange = 2**zipper.LB_BITS
-        # 0 ..   pos-2-(2**LB-1)  ..   pos-2-0 [pos-1:word]
-        # TODO: improve on the linear search.
-        for i in range(max(0, indata.pos-2-(lbrange-1)), indata.pos-1):
-            if indata.data[i] == word:
-                return self.Match(self, lbrange-(indata.pos-1-i))
+        i = indata.findlookback(word, 0, lbrange)
+        if i is not None:
+            return self.Match(self, i)
 
     def __repr__(self):
         return f"lookback"
@@ -187,11 +213,10 @@ class Dict(Operation):
 
     def matches(self, word, zipper, indata):
         #print(f"matching dict l={self.arglen} to {word:08x}")
-        # TODO: improve on the linear search.
-        for i, w in enumerate(zipper.getdict(self.arglen)):
-            #print(f" testing {w:08x} @{i:04x}")
-            if w==word:
-                return self.Match(self, i)
+        d = zipper.getdict(self.arglen)
+        i = d.get(word)
+        if i is not None:
+            return self.Match(self, i)
 
     def __repr__(self):
         return f"dict(l={self.arglen})"
@@ -255,13 +280,15 @@ class LookbackMask(Operation):
         super().__init__(*args[:-1])
         self.bitofs = args[-1]
 
+    def getmask(self):
+        return MASK(self.masklen)<<self.bitofs
+
     def matches(self, word, zipper, indata):
-        mask = MASK(self.masklen)<<self.bitofs
+        mask = self.getmask()
         lbrange = 2**zipper.LB_BITS
-        # 0 ..   pos-2-(2**LB-1)  ..   pos-2-0 [pos-1:word]
-        for i in range(max(0, indata.pos-2-(lbrange-1)), indata.pos-1):
-            if indata.data[i] & ~mask == word & ~mask:
-                return self.Match(self, (word&mask)>>self.bitofs, lbrange-(indata.pos-1-i))
+        i = indata.findlookback(word, mask, lbrange)
+        if i is not None:
+            return self.Match(self, (word&mask)>>self.bitofs, i)
 
     def __repr__(self):
         return f"mask @{self.bitofs} m:{'n'*(self.masklen//4)}  lb=nnn"
@@ -391,8 +418,8 @@ class Q6Zipper:
         self.lastOut = -1    # the compressor state.
 
     def loaddict(self, dict1, dict2):
-        self.dict1 = dict1
-        self.dict2 = dict2
+        self.dict1 = { w:i for i, w in enumerate(dict1) }
+        self.dict2 = { w:i for i, w in enumerate(dict2) }
 
     def getdict(self, bits):
         if bits == self.DICT1_BITS: return self.dict1
@@ -407,9 +434,11 @@ class Q6Zipper:
         for w in data:
             xref[w] += 1
         sortedxref = list(sorted(xref.items(), key=lambda kv: (-kv[1], kv[0])))
-        self.dict1 = [kv[0] for kv in sortedxref[:2**self.DICT1_BITS]]
+        dict1 = [kv[0] for kv in sortedxref[:2**self.DICT1_BITS]]
         sortedxref = sortedxref[2**self.DICT1_BITS:]
-        self.dict2 = [kv[0] for kv in sortedxref[:2**self.DICT2_BITS]]
+        dict2 = [kv[0] for kv in sortedxref[:2**self.DICT2_BITS]]
+
+        self.loaddict(dict1, dict2)
 
     def compress(self, data):
         """
@@ -417,6 +446,12 @@ class Q6Zipper:
         returns: bytes
         """
         inp = WordStreamReader(data)
+
+        # register masks which need special indexing to inputstream
+        for op in self.ops:
+            if isinstance(op, LookbackMask):
+                inp.addmask(op.getmask())
+
         out = BitStreamWriter()
  
         word = None
