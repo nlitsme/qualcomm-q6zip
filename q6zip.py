@@ -508,6 +508,12 @@ class Q6Zipper:
         if type(data)==bytes:
             raise Exception("need a word-array")
         inp = WordStreamReader(data)
+
+        # register masks which need special indexing to inputstream
+        for op in self.ops:
+            if isinstance(op, LookbackMask):
+                inp.addmask(op.getmask())
+
         out = BitStreamWriter()
         meta = []
  
