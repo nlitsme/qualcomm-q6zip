@@ -87,8 +87,8 @@ def main():
         w.write16le(len(sections))
         w.write16le(0x0600)         # version
         # write dicts
-        w.write(words2bytes(q6.dict1))
-        w.write(words2bytes(q6.dict2))
+        w.write(words2bytes([ kv[0] for kv in sorted(q6.dict1.items(), key=lambda kv:kv[1])]))
+        w.write(words2bytes([ kv[0] for kv in sorted(q6.dict2.items(), key=lambda kv:kv[1])]))
         # write ptrlist
         w.write(words2bytes(ptrs))
         # write compressed data
