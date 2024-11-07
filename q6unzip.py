@@ -19,11 +19,6 @@ import argparse
 
 import ELF
 
-if sys.version_info < (3, 0):
-    stdout = sys.stdout
-else:
-    stdout = sys.stdout.buffer
-
 
 def MASK(n):
     return (1<<n)-1
@@ -37,6 +32,24 @@ def bitlog(n):
         n >>= 1
         r += 1
     return r
+
+def bytes2words(data):
+    w = []
+    o = 0
+    while o+4096 <= len(data):
+        w.extend(struct.unpack_from("<1024L", data, o))
+        o += 4096
+    w.extend(struct.unpack_from("<{}L".format((len(data)-o)//4), data, o))
+    return w
+
+def words2bytes(w):
+    b = bytearray()
+    i = 0
+    while i+1024 <= len(w):
+        b.extend(struct.pack("<1024L", *w[i:i+1024]))
+        i += 1024
+    b.extend(struct.pack("<{}L".format(len(w)-i), *w[i:]))
+    return bytes(b)
 
 
 class BitStreamReader:
@@ -282,24 +295,6 @@ class Q6Unzipper:
         return out.data
 
 
-def bytes2intlist(data):
-    if len(data) % 4:
-        print("WARNING: unaligned data: %s" % data.hex())
-    return list(struct.unpack("<%dL" % (len(data)//4), data))
-
-def intlist2bytes(ilist):
-    return struct.pack("<%dL" % len(ilist), *ilist)
-
-def splitdictsize(size):
-    bits = []
-    mask = 1
-    while size and mask < 0x10000000:
-        if size&mask:
-            bits.append(mask)
-            size &= ~mask
-        mask <<= 1
-    return bits
-
 def splitbits(value, *bitfields):
     """ return bitfields in lsb->msb order """
     l = []
@@ -332,297 +327,238 @@ def getchunkmeta(value):
     return Meta(signed(bits[0], 10), bits[1], bits[2], signed(bits[3], 6))
 
 
-def processrawfile(fh, args):
+class Q6zipSegment:
     """
-    decompresses a .elf section saved to a separate file,
-    like how the modem.bNN files are stored in the NON-HLOS filesystem
-
-    with --offset you can specify a specific block to decode.
+    decode the header, dict and pointerlist of a q6zip segment,
+    also provide access to the data chunks.
     """
-    npages, version = struct.unpack("<HH", fh.read(4))
+    def __init__(self, fh, args):
+        self.fh = fh
+        self.basepos = fh.tell()
+        data = fh.read(0x100000)
+        o = 0
+        npages, self.version = struct.unpack_from("<HH", data, o)
+        o += 4
 
-    dict1size, dict2size = splitdictsize(args.dictsize)
-    dict1 = bytes2intlist(fh.read(dict1size*4))
-    dict2 = bytes2intlist(fh.read(dict2size*4))
+        # TODO: optionally heuristically determine dictsize
 
-    ptrs = bytes2intlist(fh.read(npages*4))
+        dict1size, dict2size = self.splitdictsize(args.dictsize)
 
-    firstblk_ofs = fh.tell()
+        self.dict1 = bytes2words(data[o:o+dict1size*4])
+        o += dict1size*4
+        self.dict2 = bytes2words(data[o:o+dict2size*4])
+        o += dict2size*4
 
-    fh.seek(0, 2)
-    dataend_ofs = fh.tell()
-    dataend_ptr = dataend_ofs - firstblk_ofs + ptrs[0]
+        self.ptrs = bytes2words(data[o:o+npages*4])
+        o += npages*4
 
-    sizes = [ b-a for a, b in zip(ptrs, ptrs[1:] + [ dataend_ptr ] ) ]
+        self.datastart = o
 
-    offsets = []
-    o = firstblk_ofs
-    for s in sizes:
-        offsets.append(o)
-        o += s
-    offsets.append(dataend_ofs)
+        self.elfbase = self.ptrs[0] - o
 
-    if args.verbose:
-        print("p0 = %08x,  datastart=%08x, filepos=%08x" % (ptrs[0], firstblk_ofs, fh.tell()))
+        # TODO: analyze datachunks, to determine meta-boundary
 
-    if args.dump:
-        print("%08x: npages=%d, ver=0x%04x" % (0, npages, version))
-        print("%08x: dict1 - %d words" % (4, dict1size))
-        print("%08x: dict2 - %d words" % (4+4*dict1size, dict2size))
-        print("%08x: ptrlist" % (4+4*dict1size+4*dict2size))
-        print("%08x: compressed data" % (4+4*dict1size+4*dict2size+4*npages))
-        for i, (ofs, size) in enumerate(zip(offsets, sizes)):
-            if args.offset and args.offset!=ofs:
-                continue
-            fh.seek(ofs)
-            cdata = fh.read(size)
 
-            cdata = bytes2intlist(cdata)
+    @staticmethod
+    def splitdictsize(size):
+        bits = []
+        mask = 1
+        while size and mask < 0x10000000:
+            if size&mask:
+                bits.append(mask)
+                size &= ~mask
+            mask <<= 1
+        return bits
 
-            if args.skipheader is None or i < args.skipheader:
-                a0 = getchunkmeta(cdata[0])
-                # (-1, 1..32, 0..4, 1..4)
-                a1 = getchunkmeta(cdata[1])
-                # (-1, 1..32, *, -4..2)
 
-                cdata = cdata[2:]
+    @staticmethod
+    def finddictsize(baseofs, data):
+        # TODO
+        pass
 
-                print("%08x: [%04x] (%s) (%s) (l=%03x) %s" % (ofs, i, a0, a1, len(cdata), " ".join("%08x" % _ for _ in cdata)))
-            else:
-                print("%08x: [%04x] %s" % (ofs, i, " ".join("%08x" % _ for _ in cdata)))
+    def filepos2elfaddr(self, pos):
+        return pos - self.basepos + self.elfbase
+    def elfaddr2filepos(self, addr):
+        return addr + self.basepos - self.elfbase
 
-    else:
-        if args.output:
-            ofh = open(args.output, "wb")
-        elif not args.nooutput:
-            ofh = stdout
+    def readchunk(self, ix):
+        self.fh.seek(self.elfaddr2filepos(self.ptrs[ix]))
+        if ix+1 < len(self.ptrs):
+            size = self.ptrs[ix+1] - self.ptrs[ix]
         else:
-            ofh = None
-
-        C = Q6Unzipper(dict1, dict2, args.lookback)
-        C.debug = args.debug
-
-        for i, (ofs, size) in enumerate(zip(offsets, sizes)):
-            if args.offset and args.offset!=ofs:
-                continue
-            fh.seek(ofs)
-            cdata = fh.read(size)
-
-            if args.skipheader is None or i < args.skipheader:
-                if args.debug:
-                    m = struct.unpack("<2L", cdata[:8])
-                    a0 = getchunkmeta(m[0]) # (-1, 1..32, 0..4, 1..4)
-                    a1 = getchunkmeta(m[1]) # (-1, 1..32, *, -4..2)
-                    print(f"[{i:04x}] {ofs:08x}-{ofs+size:08x}: {cdata[:8].hex()} ({a0}) ({a1})")
+            size = 0x1000
+        return self.fh.read(size)
 
 
-                cdata = cdata[8:]
-            else:
-                if args.debug:
-                    print(f"[{i:04x}] {ofs:08x}-{ofs+size:08x}")
+def dumpfile(fh, args):
+    """
+    hexdump the q6zip section at the current file position
+    """
+    q6 = Q6zipSegment(fh, args)
 
-            uncomp = C.decompress(bytes2intlist(cdata), args.maxout)
-            udata = intlist2bytes(uncomp)
+    print("p0 = %08x,  datastart=%08x" % (q6.ptrs[0], q6.datastart))
 
-            if args.verbose:
-                print("%08x: %04x -> %04x" % (ofs, size, len(udata)))
-                if args.verbose>1:
-                    print("        : %s" % cdata.hex())
-                    print("        : %s" % udata.hex())
-            if ofh:
-                ofh.flush()
-                ofh.write(udata)
+    o = q6.basepos
+    print("%08x: npages=%d, ver=0x%04x" % (o, len(q6.ptrs), q6.version))
+    o += 4
+    print("%08x: dict1 - %d words" % (o, len(q6.dict1)))
+    o += 4*len(q6.dict1)
+    print("%08x: dict2 - %d words" % (o, len(q6.dict2)))
+    o += 4*len(q6.dict2)
+    print("%08x: ptrlist" % (o,))
+    o += 4*len(q6.ptrs)
+    print("%08x: compressed data" % (o,))
+
+    for i, ofs in enumerate(q6.ptrs):
+        cdata = q6.readchunk(i)
+
+        cdata = bytes2words(cdata)
+
+        if args.skipheader is None or i < args.skipheader:
+            a0 = getchunkmeta(cdata[0])
+            # (-1, 1..32, 0..4, 1..4)
+            a1 = getchunkmeta(cdata[1])
+            # (-1, 1..32, *, -4..2)
+
+            cdata = cdata[2:]
+
+            print("%08x: [%04x] (%s) (%s) (l=%03x) %s" % (ofs, i, a0, a1, len(cdata), " ".join("%08x" % _ for _ in cdata)))
+        else:
+            print("%08x: [%04x] %s" % (ofs, i, " ".join("%08x" % _ for _ in cdata)))
+
+
+def processfile(fh, args):
+    """
+    decodes the q6zip section at the current file position
+    """
+    q6 = Q6zipSegment(fh, args)
+
+    if args.output:
+        ofh = open(args.output, "wb")
+    elif not args.nooutput:
+        ofh = sys.stdout.buffer
+    else:
+        ofh = None
+
+    C = Q6Unzipper(q6.dict1, q6.dict2, args.lookback)
+    C.debug = args.debug
+
+    for i, ofs in [(args.page, q6.ptrs[args.page])] if args.page is not None else enumerate(q6.ptrs):
+        if i+1<len(q6.ptrs):
+            size = q6.ptrs[i+1]-ofs
+        else:
+            size = 0x1000
+
+        if args.offset and args.offset!=ofs:
+            continue
+        cdata = q6.readchunk(i)
+        cdata = bytes2words(cdata)
+
+        if args.skipheader is None or i < args.skipheader:
+            if args.debug:
+                a0 = getchunkmeta(cdata[0]) # (-1, 1..32, 0..4, 1..4)
+                a1 = getchunkmeta(cdata[1]) # (-1, 1..32, *, -4..2)
+                print(f"[{i:04x}] {ofs:08x}-{ofs+size:08x}: ({a0}) ({a1})")
+            cdata = cdata[2:]
+        else:
+            if args.debug:
+                print(f"[{i:04x}] {ofs:08x}-{ofs+size:08x}")
+
+        uncomp = C.decompress(cdata, args.maxout)
+        udata = words2bytes(uncomp)
+
+        if ofh:
+            ofh.flush()
+            ofh.write(udata)
+
 
 
 def processhex(hexstr, args):
     data = bytes.fromhex(hexstr)
 
     with open(args.dictfile, "rb") as fh:
-        fh.seek(4)
-        dict1size, dict2size = splitdictsize(args.dictsize)
-        dict1 = bytes2intlist(fh.read(dict1size*4))
-        dict2 = bytes2intlist(fh.read(dict2size*4))
+        q6 = Q6zipSegment(fh, args)
 
-    C = Q6Unzipper(dict1, dict2, args.lookback)
+    C = Q6Unzipper(q6.dict1, q6.dict2, args.lookback)
     C.debug = args.debug
 
-    uncomp = C.decompress(bytes2intlist(data), args.maxout)
-    udata = intlist2bytes(uncomp)
+    uncomp = C.decompress(bytes2words(data), args.maxout)
+    udata = words2bytes(uncomp)
 
     print(udata.hex())
 
-
-def processelffile(fh, args):
-    baseofs = args.dictoffset
-    elf = ELF.read(fh)
-
-    fh.seek(elf.virt2file(baseofs))
-
-    npages, version = struct.unpack("<HH", fh.read(4))
-
-    dict1size, dict2size = splitdictsize(args.dictsize)
-    dict1 = bytes2intlist(fh.read(dict1size*4))
-    dict2 = bytes2intlist(fh.read(dict2size*4))
-
-    ptrs = bytes2intlist(fh.read(npages*4))
-    datastart = baseofs + 4 + args.dictsize*4 + npages*4
-    dataend = elf.virtend(baseofs)
-
-    if args.verbose:
-        print("p0 = %08x,  datastart=%08x, filepos=%08x" % (ptrs[0], datastart, fh.tell()))
-
-    if args.dump:
-        print("%08x: npages=%d, ver=0x%04x" % (baseofs, npages, version))
-        print("%08x: dict1 - %d words" % (baseofs+4, dict1size))
-        print("%08x: dict2 - %d words" % (baseofs+4+4*dict1size, dict2size))
-        print("%08x: ptrlist" % (baseofs+4+4*dict1size+4*dict2size))
-        print("%08x: compressed data" % (baseofs+4+4*dict1size+4*dict2size+4*npages))
-        for i, (ofs, nextofs) in enumerate(zip(ptrs, ptrs[1:]+[dataend])):
-            if args.offset and args.offset!=ofs:
-                continue
-            fh.seek(elf.virt2file(ofs))
-            cdata = fh.read(nextofs-ofs)
-
-            cdata = bytes2intlist(cdata)
-
-            if args.skipheader is None or i < args.skipheader:
-                a0 = getchunkmeta(cdata[0])
-                # (-1, 1..32, 0..4, 1..4)
-                a1 = getchunkmeta(cdata[1])
-                # (-1, 1..32, *, -4..2)
-
-                cdata = cdata[2:]
-
-                print("%08x: [%04x] (%s) (%s) (l=%03x) %s" % (ofs, i, a0, a1, len(cdata), " ".join("%08x" % _ for _ in cdata)))
-            else:
-                print("%08x: [%04x] %s" % (ofs, i, " ".join("%08x" % _ for _ in cdata)))
-
-    else:
-        if args.output:
-            ofh = open(args.output, "wb")
-        elif not args.nooutput:
-            ofh = stdout
-        else:
-            ofh = None
-
-        C = Q6Unzipper(dict1, dict2, args.lookback)
-        C.debug = args.debug
-
-        for i, (ofs, nextofs) in enumerate(zip(ptrs, ptrs[1:]+[dataend])):
-            if args.offset and args.offset!=ofs:
-                continue
-            fh.seek(elf.virt2file(ofs))
-            cdata = fh.read(nextofs-ofs)
-
-            if args.skipheader is None or i < args.skipheader:
-                if args.debug:
-                    m = struct.unpack("<2L", cdata[:8])
-                    a0 = getchunkmeta(m[0]) # (-1, 1..32, 0..4, 1..4)
-                    a1 = getchunkmeta(m[1]) # (-1, 1..32, *, -4..2)
-                    print(f"[{i:04x}] {ofs:08x}-{ofs+size:08x}: {cdata[:8].hex()} ({a0}) ({a1})")
-                cdata = cdata[8:]
-            else:
-                if args.debug:
-                    print(f"[{i:04x}] {ofs:08x}-{ofs+size:08x}")
-
-            uncomp = C.decompress(bytes2intlist(cdata), args.maxout)
-            udata = intlist2bytes(uncomp)
-
-            if args.verbose:
-                print("%08x: %04x -> %04x" % (ofs, nextofs-ofs, len(udata)))
-                if args.verbose>1:
-                    print("        : %s" % cdata.hex())
-                    print("        : %s" % udata.hex())
-            if ofh:
-                ofh.flush()
-                ofh.write(udata)
-
-
-def decompresssingle(fh, args):
+class ElfReader:
     """
-    decompress a single block
-    note: args.offset has a different meaning for this function
+    wrapper translating ELF virtual addresses to file reads.
     """
-    def getdict(spec):
-        a, b = spec.split(':')
-        return int(a, 0), int(b, 0)
+    def __init__(self, fh):
+        self.elf = ELF.read(fh)
+        self.fh = fh
 
-    elf = ELF.read(fh)
+        # fh.seek(elf.virt2file(baseofs))
+        # dataend = elf.virtend(baseofs)
+        # fh.seek(elf.virt2file(ofs))
+        # fh.seek(elf.virt2file(ofs))
+    def tell(self):
+        return self.elf.file2virt(self.fh.tell())
+    def seek(self, ofs, whence=0):
+        if whence == 0:
+            r = self.fh.seek(self.elf.virt2file(ofs))
+        elif whence == 1:
+            r = self.fh.seek(ofs, 1)
+        elif whence == 2:
+            r = self.fh.seek(ofs, 2)
+        return self.elf.file2virt(r)
 
-    dict1ofs, dict1size = getdict(args.dict1)
-    dict2ofs, dict2size = getdict(args.dict2)
-
-    fh.seek(elf.virt2file(dict1ofs))
-    dict1 = bytes2intlist(fh.read(dict1size*4))
-
-    fh.seek(elf.virt2file(dict2ofs))
-    dict2 = bytes2intlist(fh.read(dict2size*4))
-
-    C = Q6Unzipper(dict1, dict2, args.lookback)
-    C.debug = args.debug
-
-    fh.seek(elf.virt2file(args.offset))
-    cdata = fh.read(args.size)
-
-    uncomp = C.decompress(bytes2intlist(cdata), args.maxout)
-    udata = intlist2bytes(uncomp)
-
-    print("comp    : %s" % cdata.hex())
-    print("full    : %s" % udata.hex())
+    def read(self, size=None):
+        return self.fh.read(size)
 
 
 def main():
+    class Int(argparse.Action):
+        """ argparse action to convert 0xNNN ints to integers """
+        def __call__(self, parser, namespace, values, option_string=None):
+            setattr(namespace, self.dest, int(values, 0))
+
     parser = argparse.ArgumentParser(description='Decompress packed q6zip ELF sections')
-    parser.add_argument('--offset', '-o', help='Which q6zip section to decompress', type=str)
-    parser.add_argument('--size', '-s', help='how many bytes to decompress', type=str)
+    parser.add_argument('--page', '-p', help='Which q6zip page to decompress', action=Int)
+    parser.add_argument('--offset', '-o', help='Which q6zip offset to decompress', action=Int)
+    parser.add_argument('--size', '-s', help='how many bytes to decompress', action=Int)
     parser.add_argument('--dump', help='hex dump of compressed data', action='store_true')
     parser.add_argument('--verbose', '-v', action='count')
     parser.add_argument('--debug', action='store_true', help="show all compression opcodes")
-    parser.add_argument('--rawfile', action='store_true', help="file contains only the q6zip section")
     parser.add_argument('--nooutput', '-n', action='store_true', help="don't output decompressed data")
     parser.add_argument('--output', type=str, help='Save output to file')
-    parser.add_argument('--maxout', type=str, help='how much data to decompress', default='0x400')
+    parser.add_argument('--maxout', action=Int, help='how much words to decompress', default=0x400)
 
 # TODO: automatically determine dictsize
-    parser.add_argument('--dictsize', '-d', help='size of the dictionary in words', type=str, default='0x4400')
-    parser.add_argument('--dictfile', '-D', help='load dict from', type=str)
-    parser.add_argument('--dictoffset', '-O', help='load dict from', type=str)
-    parser.add_argument('--lookback', help='lookback depth', type=str, default='8')
+    parser.add_argument('--dictsize', '-d', help='size of the dictionary in words', action=Int, default=0x4400)
+    parser.add_argument('--dictfile', '-D', help='(for --hex) load dict from file', type=str)
+    parser.add_argument('--baseoffset', '-O', help='(ELF) offset to the q6zip segment', action=Int, default=0)
+    parser.add_argument('--lookback', help='lookback depth', type=int, default=8)
 # TODO: automatically determine skipheader
-    parser.add_argument('--skipheader', help='number of items with extra skip header', type=str)
+    parser.add_argument('--skipheader', help='number of items with extra skip header', action=Int)
 
-    parser.add_argument('--dict1', help='where is dict1', type=str)
-    parser.add_argument('--dict2', help='where is dict2', type=str)
     parser.add_argument('--hex', type=str, help='uncompress hex data')
 
     parser.add_argument('elffile', help='Which file to process', type=str, nargs='?')
     args = parser.parse_args()
 
-    if args.offset is not None:
-        args.offset = int(args.offset, 0)
-    if args.size is not None:
-        args.size = int(args.size, 0)
-    if args.dictsize is not None:
-        args.dictsize = int(args.dictsize , 0)
-    if args.dictoffset is not None:
-        args.dictoffset = int(args.dictoffset , 0)
-    if args.lookback is not None:
-        args.lookback = int(args.lookback , 0)
-    if args.skipheader is not None:
-        args.skipheader = int(args.skipheader , 0)
-
-    args.maxout = int(args.maxout, 0)
-
     if args.hex:
+        # hex compressed data from the commandline
         processhex(args.hex, args)
     elif args.elffile:
         with open(args.elffile, "rb") as fh:
-            if args.rawfile:
-                processrawfile(fh, args)
-            elif args.dict1 and args.dict2:
-                decompresssingle(fh, args)
+            elfmagic = fh.read(4)
+            if elfmagic == b"\x7fELF":
+                fh.seek(0)
+                fh = ElfReader(fh)
+
+            fh.seek(args.baseoffset)
+            if args.dump:
+                dumpfile(fh, args)
             else:
-                processelffile(fh, args)
+                processfile(fh, args)
     else:
         print("no inpput specified: either --hex or elffile")
 
