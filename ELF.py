@@ -202,10 +202,14 @@ class Header:
         def is_paged(self):
             return (self.flags >> 20)&1 != 0
 
+        def hasfileofs(self, fileofs):
+            return 0 <= fileofs-self.fileoffset < self.filesize
         def hasvaddr(self, vaddr):
             return 0 <= vaddr-self.vaddr < self.filesize
         def haspaddr(self, paddr):
             return 0 <= paddr-self.paddr < self.filesize
+        def isfileend(self, fileofs):
+            return fileofs == self.fileoffset+self.filesize
         def isvend(self, vaddr):
             return vaddr == self.vaddr+self.filesize
         def ispend(self, paddr):
@@ -324,6 +328,30 @@ class Header:
             if seg.hasvaddr(vofs) or seg.isvend(vofs):
                 found = seg
         return found
+
+    def file2virt(self, offset):
+        seg = self.fileseg(offset)
+        if not seg:
+            print("ofs=%08x" % offset)
+            raise Exception("invalid file offset")
+        return offset + seg.vaddr - seg.fileoffset
+
+    def fileend(self, offset):
+        seg = self.fileseg(offset)
+        return seg.fileofs + seg.filesize
+
+    def fileseg(self, fileofs):
+        # returns highest segment containing this fileoffset.
+        # also returns segment for address just one beyond the last byte.
+        found = None
+        for seg in sorted(self.pgm, key=lambda x: x.fileoffset):
+            # make sure we use the main seg while recalculating 
+            # file offsets, in recalcoffsets
+            if not seg.fileoffset and seg.type > 1: continue
+            if seg.hasfileofs(fileofs) or seg.isfileend(fileofs):
+                found = seg
+        return found
+
 
     def phys2file(self, offset):
         seg = self.physseg(offset)
