@@ -153,23 +153,23 @@ class Q6Unzipper:
     The data is packed with a variable length opcode, listed in the table below.
     Read the opcodes from right-to-left.
 
-               <entry1:10>      100   |13|  DICT1_MATCH       dict1 nnn                out.addword(self.dict1[entry])
-               <entry2:12>     0101   |16|  DICT2_MATCH       dict1 nnnn               out.addword(self.dict2[entry])
-               <dword:32>       011   |35|  NO_MATCH          lit nnnnnnnn             out.addword(masked)
+               <entry1:10>      100   |13|  DICT1_MATCH       dict1 nnn                .addword(self.dict1[entry])
+               <entry2:12>     0101   |16|  DICT2_MATCH       dict1 nnnn               .addword(self.dict2[entry])
+               <dword:32>       011   |35|  NO_MATCH          lit nnnnnnnn             .addword(masked)
                                                                                        
-                                111   | 3|  MATCH_8N_SQ1      seq                      out.copyword(lastOut)
-   <masked:8>               0011010   |15|  MATCH_6N_2x4_SQ1  mask @16 m:nn            out.copybits(lastOut, masked, 8, 16)   or END_BLOCK
-   <masked:8>               1011010   |15|  MATCH_6N_2x2_SQ1  mask @8 m:nn             out.copybits(lastOut, masked, 8, 8)
-   <masked:8>                   110   |11|  MATCH_6N_2x0_SQ1  mask @0 m:nn             out.copybits(lastOut, masked, 8, 0)
-   <masked:12>                11101   |17|  MATCH_5N_3x0_SQ1  mask @0 m:nnn            out.copybits(lastOut, masked, 12, 0)
-   <masked:16>               001010   |22|  MATCH_4N_4x0_SQ1  mask @0 m:nnnn           out.copybits(lastOut, masked, 16, 0)
+                                111   | 3|  MATCH_8N_SQ1      seq                      .copyword(lastOut)
+   <masked:8>               0011010   |15|  MATCH_6N_2x4_SQ1  mask @16 m:nn            .copybits(lastOut, masked, 8, 16)   or END_BLOCK
+   <masked:8>               1011010   |15|  MATCH_6N_2x2_SQ1  mask @8 m:nn             .copybits(lastOut, masked, 8, 8)
+   <masked:8>                   110   |11|  MATCH_6N_2x0_SQ1  mask @0 m:nn             .copybits(lastOut, masked, 8, 0)
+   <masked:12>                11101   |17|  MATCH_5N_3x0_SQ1  mask @0 m:nnn            .copybits(lastOut, masked, 12, 0)
+   <masked:16>               001010   |22|  MATCH_4N_4x0_SQ1  mask @0 m:nnnn           .copybits(lastOut, masked, 16, 0)
 
-               <lastout:8>      001   |12|  MATCH_8N_SQ0      lookback  lb=nnn         out.copyword(lastOut)
-   <masked:8>  <lastout:8>   101010   |23|  MATCH_6N_2x4_SQ0  mask @16 m:nn  lb=nnn    out.copybits(lastOut, masked, 8, 16)
-   <masked:8>  <lastout:8>   111010   |23|  MATCH_6N_2x2_SQ0  mask @8 m:nn  lb=nnn     out.copybits(lastOut, masked, 8, 8)
-   <masked:8>  <lastout:8>      000   |20|  MATCH_6N_2x0_SQ0  mask @0 m:nn  lb=nnn     out.copybits(lastOut, masked, 8, 0)
-   <masked:12> <lastout:8>     0010   |25|  MATCH_5N_3x0_SQ0  mask @0 m:nnn  lb=nnn    out.copybits(lastOut, masked, 12, 0)
-   <masked:16> <lastout:8>    01101   |30|  MATCH_4N_4x0_SQ0  mask @0 m:nnnn  lb=nnn   out.copybits(lastOut, masked, 16, 0)
+               <lastout:8>      001   |12|  MATCH_8N_SQ0      lookback  lb=nnn         .copyword(lastOut)
+   <masked:8>  <lastout:8>   101010   |23|  MATCH_6N_2x4_SQ0  mask @16 m:nn  lb=nnn    .copybits(lastOut, masked, 8, 16)
+   <masked:8>  <lastout:8>   111010   |23|  MATCH_6N_2x2_SQ0  mask @8 m:nn  lb=nnn     .copybits(lastOut, masked, 8, 8)
+   <masked:8>  <lastout:8>      000   |20|  MATCH_6N_2x0_SQ0  mask @0 m:nn  lb=nnn     .copybits(lastOut, masked, 8, 0)
+   <masked:12> <lastout:8>     0010   |25|  MATCH_5N_3x0_SQ0  mask @0 m:nnn  lb=nnn    .copybits(lastOut, masked, 12, 0)
+   <masked:16> <lastout:8>    01101   |30|  MATCH_4N_4x0_SQ0  mask @0 m:nnnn  lb=nnn   .copybits(lastOut, masked, 16, 0)
 
     """
     def __init__(self, dict1, dict2, lookback=8):
@@ -188,7 +188,7 @@ class Q6Unzipper:
         Decompresses data from a byte array `compressed`, returning the uncompressed data bytes.
         """
         bits = BitStreamReader(compressed)
-        out = WordStreamWriter()
+        words = WordStreamWriter()
 
         #  this is the only state of the algorithm.
         #  always a negative number from -2**LB+1 .. -1
@@ -197,8 +197,8 @@ class Q6Unzipper:
 
         if self.debug:
             def log(msg):
-                word = out.data[-1] if out.data else 0
-                print(f"    [{out.len():04x}] {word:08x} {bits.pos:4x}:{bits.bitpos:2x} ({lastOut:4d}) {msg}")
+                word = words.data[-1] if words.data else 0
+                print(f"    [{words.len():04x}] {word:08x} {bits.pos:4x}:{bits.bitpos:2x} ({lastOut:4d}) {msg}")
 
             print("    outofs  outdata  ofs:bit last action")
         else:
@@ -206,83 +206,83 @@ class Q6Unzipper:
                 pass
 
         try:
-            while out.len() <= MAXOUT:
+            while words.len() <= MAXOUT:
                 op1 = bits.get(3)
                 if op1 == 0:  # MATCH_6N_2x0_SQ0 set lastout, byte from stream
                     lastOut = bits.get(self.LB_BITS) - (1<<self.LB_BITS)
                     masked = bits.get(8)
-                    out.copybits(lastOut, masked, 8, 0)
+                    words.copybits(lastOut, masked, 8, 0)
                     log(f"mask @0 m:{masked:02x}  lb={lastOut+2**self.LB_BITS:03x}")
                 elif op1 == 1:  # MATCH_8N_SQ0 set lastout, dword from lastout
                     lastOut = bits.get(self.LB_BITS) - (1<<self.LB_BITS)
-                    out.copyword(lastOut)
+                    words.copyword(lastOut)
 
                     log(f"lookback  lb={lastOut+2**self.LB_BITS:03x}")
                 elif op1 == 2:
                     if bits.get(1)==0: # MATCH_5N_3x0_SQ0        -- setting lastOut
                         lastOut = bits.get(self.LB_BITS) - (1<<self.LB_BITS)
                         masked = bits.get(12)
-                        out.copybits(lastOut, masked, 12, 0)
+                        words.copybits(lastOut, masked, 12, 0)
                         log(f"mask @0 m:{masked:03x}  lb={lastOut+2**self.LB_BITS:03x}")
                     else:
                         op2 = bits.get(2)
                         if op2==0: # MATCH_4N_4x0_SQ1   -- reusing 'lastOut'
                             masked = bits.get(16)
-                            out.copybits(lastOut, masked, 16, 0)
+                            words.copybits(lastOut, masked, 16, 0)
                             log(f"mask @0 m:{masked:04x}")
                         elif op2==2: # MATCH_6N_2x4_SQ0        -- setting lastOut
                             lastOut = bits.get(self.LB_BITS) - (1<<self.LB_BITS)
                             masked = bits.get(8)
-                            out.copybits(lastOut, masked, 8, 16)
+                            words.copybits(lastOut, masked, 8, 16)
                             log(f"mask @16 m:{masked:02x}  lb={lastOut+2**self.LB_BITS:03x}")
                         elif op2==3: # MATCH_6N_2x2_SQ0        -- setting lastOut
                             lastOut = bits.get(self.LB_BITS) - (1<<self.LB_BITS)
                             masked = bits.get(8)
-                            out.copybits(lastOut, masked, 8, 8)
+                            words.copybits(lastOut, masked, 8, 8)
                             log(f"mask @8 m:{masked:02x}  lb={lastOut+2**self.LB_BITS:03x}")
                         elif bits.get(1): # MATCH_6N_2x2_SQ1   -- reusing 'lastOut'
                             masked = bits.get(8)
-                            out.copybits(lastOut, masked, 8, 8)
+                            words.copybits(lastOut, masked, 8, 8)
                             log(f"mask @8 m:{masked:02x}")
                         else: # MATCH_6N_2x4_SQ1    -- reusing 'lastOut'
                             masked = bits.get(8)
                             if masked != 0xFF:
                                 # .. in the modem.elf binary a check is here for masked==0xff -> stop
-                                out.copybits(lastOut, masked, 8, 16)
+                                words.copybits(lastOut, masked, 8, 16)
                                 log(f"mask @16 m:{masked:02x}")
                             else:
                                 log("break")
-                                if out.len() >= MAXOUT:
+                                if words.len() >= MAXOUT:
                                     break
                 elif op1 == 3: # NO_MATCH
                     masked = bits.get(32)
-                    out.addword(masked)
+                    words.addword(masked)
                     log(f"lit {masked:08x}")
                 elif op1 == 4: # DICT1_MATCH
                     entry = bits.get(self.DICT1_BITS)
-                    out.addword(self.dict1[entry])
+                    words.addword(self.dict1[entry])
                     log(f"dict1 {entry:03x}")
                 elif op1 == 5:
                     if bits.get(1)==0: # DICT2_MATCH
                         entry = bits.get(self.DICT2_BITS)
-                        out.addword(self.dict2[entry])
+                        words.addword(self.dict2[entry])
                         log(f"dict2 {entry:04x}")
                     else:
                         if bits.get(1): # MATCH_5N_3x0_SQ1   -- reusing 'lastOut'
                             masked = bits.get(12)
-                            out.copybits(lastOut, masked, 12, 0)
+                            words.copybits(lastOut, masked, 12, 0)
                             log(f"mask @0 m:{masked:03x}")
                         else: # MATCH_4N_4x0_SQ0        -- setting lastOut
                             lastOut = bits.get(self.LB_BITS) - (1<<self.LB_BITS)
                             masked = bits.get(16)
-                            out.copybits(lastOut, masked, 16, 0)
+                            words.copybits(lastOut, masked, 16, 0)
                             log(f"mask @0 m:{masked:04x}  lb={lastOut+2**self.LB_BITS:03x}")
                 elif op1 == 6:   # MATCH_6N_2x0_SQ1 byte from stream   -- reusing 'lastOut'
                     masked = bits.get(8)
-                    out.copybits(lastOut, masked, 8, 0)
+                    words.copybits(lastOut, masked, 8, 0)
                     log(f"mask @0 m:{masked:02x}")
                 elif op1 == 7:   # MATCH_8N_SQ1  dword from lastout   -- reusing 'lastOut'
-                    out.copyword(lastOut)
+                    words.copyword(lastOut)
                     log("seq")
                 else:
                     print("unexpected op", op1)
@@ -292,7 +292,7 @@ class Q6Unzipper:
         finally:
             log("done")
 
-        return out.data
+        return words.data
 
 
 def splitbits(value, *bitfields):
