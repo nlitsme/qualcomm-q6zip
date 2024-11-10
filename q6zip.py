@@ -75,10 +75,12 @@ class WordStreamReader:
         self.lookup[mask] = {}
 
     def addtoindex(self, word, abspos):
+        """ update all lookup indices with this new word """
         for m, ix in self.lookup.items():
             ix[word & ~m] = abspos
 
     def findlookback(self, word, mask, lbrange):
+        """ search the lookup index corresponding to the specified mask """
         abspos = self.lookup[mask].get(word & ~mask)
         if abspos is not None:
             delta = abspos - self.pos + 1
@@ -120,18 +122,24 @@ class Operation:
     masklen : int     # mask bitlen
     arglen : int      # non mask arg bitlen
 
-    @abstractmethod
-    def matches(self, word, zipper, words) -> bool: ...
-
-    def bitsize(self):
-        return self.codelen + self.masklen + self.arglen
-
     class MatchBase:
         def __init__(self, op):
+            """ subclasses may have more parameters """
             self.op = op
 
         @abstractmethod
-        def encode(self, zipper, bits) -> None: ...
+        def encode(self, zipper, bits) -> None:
+            """ encode both the opcode and parameters of this operation """
+            ...
+    @abstractmethod
+    def matches(self, word, zipper, words) -> MatchBase:
+        """ returns a MatchBase subclass when the word matches this operation """
+        ...
+
+    def bitsize(self) -> int:
+        """ return the total size in bits of this operation """
+        return self.codelen + self.masklen + self.arglen
+
 
 
 class Sequential(Operation):
