@@ -1,24 +1,11 @@
+from dataclasses import dataclass
+from abc import ABC, abstractmethod
+import struct
 """
 Tool for decompressing q6zip compressed CODE sections.
 
 Author: Willem Hengeveld <itsme@gsmk.de>
 """
-# from https://github.com/EchoQian/PhoebeM/blob/master/modem_proc/core/kernel/dlpager/src/dlpager_q6zip.c
-#   dlpager_load_virtual_page_rx calls q6zip_uncompress
-#   dlpager_load_virtual_page decides to call ..._rx
-# https://github.com/EchoQian/PhoebeM/blob/master/modem_proc/core/kernel/dlpager/src/q6zip_uncompress.c
-# https://github.com/EchoQian/PhoebeM/blob/master/modem_proc/core/kernel/dlpager/compressor/compress_process.py
-
-# TODO: add option to decompress a section by ptr index.
-
-from __future__ import division, print_function
-from dataclasses import dataclass
-import sys
-import struct
-import argparse
-
-import ELF
-
 
 def MASK(n):
     return (1<<n)-1
@@ -145,6 +132,301 @@ class WordStreamWriter:
         self.data.append(value)
 
 
+@dataclass
+class Operation:
+    """
+    baseclass for compression operations
+    """
+    code : int
+    codelen : int     # nr of bits in the code
+    qcomorder : int   # op ordering used by qualcomm
+    masklen : int     # mask bitlen
+    arglen : int      # non mask arg bitlen
+
+    class MatchBase:
+        def __init__(self, op):
+            """ subclasses may have more parameters """
+            self.op = op
+
+        @abstractmethod
+        def encode(self, zipper, bits) -> None:
+            """ encode both the opcode and parameters of this operation """
+            ...
+
+        @abstractmethod
+        def decode(self, zipper, words) -> None:
+            """ decodes this operation into a decompressed word """
+            ...
+
+        def isbreak(self):
+            """ only true for the Break operation """
+            return False
+
+    @abstractmethod
+    def matches(self, word, zipper, words) -> MatchBase:
+        """ returns a MatchBase subclass when the word matches this operation """
+        ...
+
+    @abstractmethod
+    def read(self, bits) -> MatchBase:
+        """ decodes the parameters for this operation, and returns the result in as Match(Base) subclass """
+        ...
+
+    def bitsize(self) -> int:
+        """ return the total size in bits of this operation """
+        return self.codelen + self.masklen + self.arglen
+
+
+
+class Sequential(Operation):
+    """
+    Construct as:
+                      code, l, qc, m,  arglen
+    Sequential(      0b111, 3,  1, 0,  0),                # MATCH_8N_SQ1       .copyword(lastOut)
+
+    outputs op: 111
+    When decompressing, repeats the previous outputted word.
+    """
+    class Match(Operation.MatchBase):
+        def __init__(self, op):
+            self.op = op
+        def encode(self, zipper, bits):
+            bits.put(self.op.code, self.op.codelen)
+        def decode(self, zipper, words):
+            words.copyword(zipper.lastOut)
+        def __repr__(self):
+            return f"seq"
+
+    def matches(self, word, zipper, words):
+        p = words.pos-1+zipper.lastOut
+        if p>=0 and words.data[p] == word:
+            return self.Match(self)
+
+    def read(self, bits):
+        return self.Match(self)
+
+    def __repr__(self):
+        return f"seq"
+
+class Lookback(Operation):
+    """
+    Construct as:
+                      code, l, qc, m,  arglen
+    Lookback(        0b001, 3,  3, 0, self.LB_BITS),      # MATCH_8N_SQ0       .copyword(lastOut)
+
+    outpus op: <lookback> 001
+    When decompressing, repeats the word 'lookback' items back.
+    """
+    class Match(Operation.MatchBase):
+        def __init__(self, op, lb):
+            self.op = op
+            self.lb = lb
+        def encode(self, zipper, bits):
+            bits.put(self.op.code, self.op.codelen)
+            bits.put(self.lb, zipper.LB_BITS)
+            zipper.lastOut = self.lb-2**zipper.LB_BITS
+        def decode(self, zipper, words):
+            # update lastOut
+            zipper.lastOut = self.lb-2**zipper.LB_BITS
+            words.copyword(zipper.lastOut)
+        def __repr__(self):
+            return f"lookback  lb={self.lb:03x}"
+
+    def matches(self, word, zipper, words):
+        lbrange = 2**zipper.LB_BITS
+        i = words.findlookback(word, 0, lbrange)
+        if i is not None:
+            return self.Match(self, i)
+
+    def read(self, bits):
+        return self.Match(self, bits.get(self.arglen))
+
+    def __repr__(self):
+        return f"lookback"
+
+class Dict(Operation):
+    """
+    Construct in one of the following ways:
+                      code, l, qc, m,  arglen
+    Dict(            0b100, 3,  4, 0, self.DICT1_BITS),   # DICT1_MATCH        .addword(self.dict1[entry])
+    Dict(           0b0101, 4,  7, 0, self.DICT2_BITS),   # DICT2_MATCH        .addword(self.dict2[entry])
+
+    outputs op: <index> {100|0101}
+    When decompressing, inserts the word at the specified dictionary location.
+    """
+    class Match(Operation.MatchBase):
+        def __init__(self, op, ent):
+            self.op = op
+            self.ent = ent
+        def encode(self, zipper, bits):
+            bits.put(self.op.code, self.op.codelen)
+            bits.put(self.ent, self.op.arglen)
+        def decode(self, zipper, words):
+            d = zipper.getdict(self.op.arglen)
+            words.addword(d[self.ent])
+        def __repr__(self):
+            if self.op.arglen<12:
+                return f"dict1 {self.ent:03x}"
+            else:
+                return f"dict2 {self.ent:04x}"
+
+    def matches(self, word, zipper, words):
+        #print(f"matching dict l={self.arglen} to {word:08x}")
+        d = zipper.getdict(self.arglen)
+        i = d.get(word)
+        if i is not None:
+            return self.Match(self, i)
+
+    def read(self, bits):
+        return self.Match(self, bits.get(self.arglen))
+
+    def __repr__(self):
+        return f"dict(l={self.arglen})"
+
+class Literal(Operation):
+    """
+    Construct as:
+                      code, l, qc, m,  arglen
+    Literal(         0b011, 3, 15, 0, 32),                # NO_MATCH           .addword(masked)
+
+    outputs op: <word> 011
+    When decompressing outputs the specifeid literal word.
+    """
+    class Match(Operation.MatchBase):
+        def __init__(self, op, w):
+            self.op = op
+            self.w = w 
+        def encode(self, zipper, bits):
+            bits.put(self.op.code, self.op.codelen)
+            bits.put(self.w, 32)
+        def decode(self, zipper, words):
+            words.addword(self.w)
+        def __repr__(self):
+            return f"lit {self.w:08x}"
+
+    def matches(self, word, zipper, words):
+        return self.Match(self, word)
+
+    def read(self, bits):
+        return self.Match(self, bits.get(32))
+
+    def __repr__(self):
+        return f"literal"
+
+class LookbackMask(Operation):
+    """
+    Construct in one of the following ways:
+                      code, l, qc, m,    arglen    bitofs
+    LookbackMask( 0b101010, 6, 12, 8, self.LB_BITS,16),   # MATCH_6N_2x4_SQ0   .copybits(lastOut, masked,  8,16)
+    LookbackMask( 0b111010, 6, 11, 8, self.LB_BITS, 8),   # MATCH_6N_2x2_SQ0   .copybits(lastOut, masked,  8, 8)
+    LookbackMask(    0b000, 3,  9, 8, self.LB_BITS, 0),   # MATCH_6N_2x0_SQ0   .copybits(lastOut, masked,  8, 0)
+    LookbackMask(   0b0010, 4, 13,12, self.LB_BITS, 0),   # MATCH_5N_3x0_SQ0   .copybits(lastOut, masked, 12, 0)
+    LookbackMask(  0b01101, 5, 14,16, self.LB_BITS, 0),   # MATCH_4N_4x0_SQ0   .copybits(lastOut, masked, 16, 0)
+
+    outputs op: <masked> <lookback> {0010|101010|01101|111010|000}
+
+    When decompressing, outputs the specified previous word, with the masked bits replaced with the 'mask' value.
+    """
+    class Match(Operation.MatchBase):
+        def __init__(self, op, m, lb):
+            self.op = op
+            self.m = m
+            self.lb = lb
+        def encode(self, zipper, bits):
+            bits.put(self.op.code, self.op.codelen)
+            bits.put(self.lb, zipper.LB_BITS)
+            bits.put(self.m, self.op.masklen)
+            zipper.lastOut = self.lb-2**zipper.LB_BITS
+        def decode(self, zipper, words):
+            # update lastOut
+            zipper.lastOut = self.lb-2**zipper.LB_BITS
+            words.copybits(zipper.lastOut, self.m, self.op.masklen, self.op.bitofs)
+        def __repr__(self):
+            if self.op.masklen== 8: m = f"{self.m:02x}"
+            elif self.op.masklen== 12: m = f"{self.m:03x}"
+            elif self.op.masklen== 16: m = f"{self.m:04x}"
+            return f"mask @{self.op.bitofs} m:{m}  lb={self.lb:03x}"
+
+    def __init__(self, *args):
+        super().__init__(*args[:-1])
+        self.bitofs = args[-1]
+
+    def getmask(self):
+        return MASK(self.masklen)<<self.bitofs
+
+    def matches(self, word, zipper, words):
+        mask = self.getmask()
+        lbrange = 2**zipper.LB_BITS
+        i = words.findlookback(word, mask, lbrange)
+        if i is not None:
+            return self.Match(self, (word&mask)>>self.bitofs, i)
+
+    def read(self, bits):
+        lb = bits.get(self.arglen)
+        masked = bits.get(self.masklen)
+        return self.Match(self, masked, lb)
+
+    def __repr__(self):
+        return f"mask @{self.bitofs} m:{'n'*(self.masklen//4)}  lb=nnn"
+
+class Mask(Operation):
+    """
+    Construct in one of the following ways:
+                      code, l, qc, m, a  bitofs
+    Mask(        0b0011010, 7,  6, 8, 0,16),              # MATCH_6N_2x4_SQ1   .copybits(lastOut, masked,  8,16)   or END_BLOCK
+    Mask(        0b1011010, 7,  5, 8, 0, 8),              # MATCH_6N_2x2_SQ1   .copybits(lastOut, masked,  8, 8)
+    Mask(            0b110, 3,  2, 8, 0, 0),              # MATCH_6N_2x0_SQ1   .copybits(lastOut, masked,  8, 0)
+    Mask(          0b11101, 5,  8,12, 0, 0),              # MATCH_5N_3x0_SQ1   .copybits(lastOut, masked, 12, 0)
+    Mask(         0b001010, 6, 10,16, 0, 0),              # MATCH_4N_4x0_SQ1   .copybits(lastOut, masked, 16, 0)
+
+    outputs op: <masked> {11101|011010|001010|1011010|110}
+
+    When decompressing, repeats the most recent value, with the masked bits replaced.
+    """
+    class Match(Operation.MatchBase):
+        def __init__(self, op, m):
+            self.op = op
+            self.m = m
+        def encode(self, zipper, bits):
+            bits.put(self.op.code, self.op.codelen)
+            bits.put(self.m, self.op.masklen)
+        def decode(self, zipper, words):
+            words.copybits(zipper.lastOut, self.m, self.op.masklen, self.op.bitofs)
+        def __repr__(self):
+            if self.isbreak():
+                return "break"
+            if self.op.masklen== 8: m = f"{self.m:02x}"
+            elif self.op.masklen== 12: m = f"{self.m:03x}"
+            elif self.op.masklen== 16: m = f"{self.m:04x}"
+
+            return f"mask @{self.op.bitofs} m:{m}"
+        def isbreak(self):
+            return self.op.masklen==8 and self.op.bitofs==16 and self.m == 0xff
+
+    def __init__(self, *args):
+        super().__init__(*args[:-1])
+        self.bitofs = args[-1]
+
+    def matches(self, word, zipper, words):
+        p = words.pos-1+zipper.lastOut
+        if p<0:
+            return
+
+        mask = MASK(self.masklen)<<self.bitofs
+        if words.data[p] & ~mask == word & ~mask:
+            m = (word&mask)>>self.bitofs
+            if self.code == 0b0011010 and m==0xff:
+                # don't emit break as regular mask opcode.
+                return
+            return self.Match(self, m)
+
+    def read(self, bits):
+        masked = bits.get(self.masklen)
+        return self.Match(self, masked)
+
+    def __repr__(self):
+        return f"mask @{self.bitofs} m:{'n'*(self.masklen//4)}"
+
 
 class Q6Unzipper:
     """
@@ -153,23 +435,23 @@ class Q6Unzipper:
     The data is packed with a variable length opcode, listed in the table below.
     Read the opcodes from right-to-left.
 
-               <entry1:10>      100   |13|  DICT1_MATCH       dict1 nnn                .addword(self.dict1[entry])
-               <entry2:12>     0101   |16|  DICT2_MATCH       dict1 nnnn               .addword(self.dict2[entry])
-               <dword:32>       011   |35|  NO_MATCH          lit nnnnnnnn             .addword(masked)
-                                                                                       
-                                111   | 3|  MATCH_8N_SQ1      seq                      .copyword(lastOut)
-   <masked:8>               0011010   |15|  MATCH_6N_2x4_SQ1  mask @16 m:nn            .copybits(lastOut, masked, 8, 16)   or END_BLOCK
-   <masked:8>               1011010   |15|  MATCH_6N_2x2_SQ1  mask @8 m:nn             .copybits(lastOut, masked, 8, 8)
-   <masked:8>                   110   |11|  MATCH_6N_2x0_SQ1  mask @0 m:nn             .copybits(lastOut, masked, 8, 0)
-   <masked:12>                11101   |17|  MATCH_5N_3x0_SQ1  mask @0 m:nnn            .copybits(lastOut, masked, 12, 0)
-   <masked:16>               001010   |22|  MATCH_4N_4x0_SQ1  mask @0 m:nnnn           .copybits(lastOut, masked, 16, 0)
+               <entry1:10>      100   DICT1_MATCH       dict1 nnn                .addword(self.dict1[entry])
+               <entry2:14>     0101   DICT2_MATCH       dict1 nnnn               .addword(self.dict2[entry])
+               <dword:32>       011   NO_MATCH          lit nnnnnnnn             .addword(masked)
+                                                                                 
+                                111   MATCH_8N_SQ1      seq                      .copyword(lastOut)
+   <masked:8>               0011010   MATCH_6N_2x4_SQ1  mask @16 m:nn            .copybits(lastOut, masked, 8, 16)   or END_BLOCK
+   <masked:8>               1011010   MATCH_6N_2x2_SQ1  mask @8 m:nn             .copybits(lastOut, masked, 8, 8)
+   <masked:8>                   110   MATCH_6N_2x0_SQ1  mask @0 m:nn             .copybits(lastOut, masked, 8, 0)
+   <masked:12>                11101   MATCH_5N_3x0_SQ1  mask @0 m:nnn            .copybits(lastOut, masked, 12, 0)
+   <masked:16>               001010   MATCH_4N_4x0_SQ1  mask @0 m:nnnn           .copybits(lastOut, masked, 16, 0)
 
-               <lastout:8>      001   |12|  MATCH_8N_SQ0      lookback  lb=nnn         .copyword(lastOut)
-   <masked:8>  <lastout:8>   101010   |23|  MATCH_6N_2x4_SQ0  mask @16 m:nn  lb=nnn    .copybits(lastOut, masked, 8, 16)
-   <masked:8>  <lastout:8>   111010   |23|  MATCH_6N_2x2_SQ0  mask @8 m:nn  lb=nnn     .copybits(lastOut, masked, 8, 8)
-   <masked:8>  <lastout:8>      000   |20|  MATCH_6N_2x0_SQ0  mask @0 m:nn  lb=nnn     .copybits(lastOut, masked, 8, 0)
-   <masked:12> <lastout:8>     0010   |25|  MATCH_5N_3x0_SQ0  mask @0 m:nnn  lb=nnn    .copybits(lastOut, masked, 12, 0)
-   <masked:16> <lastout:8>    01101   |30|  MATCH_4N_4x0_SQ0  mask @0 m:nnnn  lb=nnn   .copybits(lastOut, masked, 16, 0)
+               <lastout:8>      001   MATCH_8N_SQ0      lookback  lb=nnn         .copyword(lastOut)
+   <masked:8>  <lastout:8>   101010   MATCH_6N_2x4_SQ0  mask @16 m:nn  lb=nnn    .copybits(lastOut, masked, 8, 16)
+   <masked:8>  <lastout:8>   111010   MATCH_6N_2x2_SQ0  mask @8 m:nn  lb=nnn     .copybits(lastOut, masked, 8, 8)
+   <masked:8>  <lastout:8>      000   MATCH_6N_2x0_SQ0  mask @0 m:nn  lb=nnn     .copybits(lastOut, masked, 8, 0)
+   <masked:12> <lastout:8>     0010   MATCH_5N_3x0_SQ0  mask @0 m:nnn  lb=nnn    .copybits(lastOut, masked, 12, 0)
+   <masked:16> <lastout:8>    01101   MATCH_4N_4x0_SQ0  mask @0 m:nnnn  lb=nnn   .copybits(lastOut, masked, 16, 0)
 
     """
     def __init__(self, dict1, dict2, lookback=8):
@@ -183,6 +465,44 @@ class Q6Unzipper:
         self.DICT1_BITS = bitlog(len(dict1))
         self.DICT2_BITS = bitlog(len(dict2))
 
+        self.tree = self.buildtree([    #   code clen   #  m arg  [bitpos]
+            Dict(            0b100, 3,  4, 0, self.DICT1_BITS),   # DICT1_MATCH        .addword(self.dict1[entry])
+            Dict(           0b0101, 4,  7, 0, self.DICT2_BITS),   # DICT2_MATCH        .addword(self.dict2[entry])
+            Literal(         0b011, 3, 15, 0, 32),                # NO_MATCH           .addword(masked)
+
+            Sequential(      0b111, 3,  1, 0, 0),                 # MATCH_8N_SQ1       .copyword(lastOut)
+            Mask(        0b0011010, 7,  6, 8, 0,16),              # MATCH_6N_2x4_SQ1   .copybits(lastOut, masked,  8,16)   or END_BLOCK or END_BLOCK
+            Mask(        0b1011010, 7,  5, 8, 0, 8),              # MATCH_6N_2x2_SQ1   .copybits(lastOut, masked,  8, 8)
+            Mask(            0b110, 3,  2, 8, 0, 0),              # MATCH_6N_2x0_SQ1   .copybits(lastOut, masked,  8, 0)
+            Mask(          0b11101, 5,  8,12, 0, 0),              # MATCH_5N_3x0_SQ1   .copybits(lastOut, masked, 12, 0)
+            Mask(         0b001010, 6, 10,16, 0, 0),              # MATCH_4N_4x0_SQ1   .copybits(lastOut, masked, 16, 0)
+
+            Lookback(        0b001, 3,  3, 0, self.LB_BITS),      # MATCH_8N_SQ0       .copyword(lastOut)
+            LookbackMask( 0b101010, 6, 12, 8, self.LB_BITS,16),   # MATCH_6N_2x4_SQ0   .copybits(lastOut, masked,  8,16)
+            LookbackMask( 0b111010, 6, 11, 8, self.LB_BITS, 8),   # MATCH_6N_2x2_SQ0   .copybits(lastOut, masked,  8, 8)
+            LookbackMask(    0b000, 3,  9, 8, self.LB_BITS, 0),   # MATCH_6N_2x0_SQ0   .copybits(lastOut, masked,  8, 0)
+            LookbackMask(   0b0010, 4, 13,12, self.LB_BITS, 0),   # MATCH_5N_3x0_SQ0   .copybits(lastOut, masked, 12, 0)
+            LookbackMask(  0b01101, 5, 14,16, self.LB_BITS, 0),   # MATCH_4N_4x0_SQ0   .copybits(lastOut, masked, 16, 0)
+        ])
+
+    def buildtree(self, ops):
+        tree = []
+        for o in ops:
+            q = None
+            p = tree
+            for i in range(o.codelen):
+                b = (o.code>>i)&1
+                while len(p)<=b:
+                    p.append([])
+                q = p
+                p = p[b]
+            q[b] = o
+        return tree
+
+    def getdict(self, bits):
+        if bits == self.DICT1_BITS: return self.dict1
+        if bits == self.DICT2_BITS: return self.dict2
+
     def decompress(self, compressed, MAXOUT=0x400):
         """
         Decompresses data from a byte array `compressed`, returning the uncompressed data bytes.
@@ -192,13 +512,13 @@ class Q6Unzipper:
 
         #  this is the only state of the algorithm.
         #  always a negative number from -2**LB+1 .. -1
-        #  it is stored in the opcodes as  2^LB + lastOut
-        lastOut = -1
+        #  it is stored in the bitstream as  2^LB + lastOut
+        self.lastOut = -1
 
         if self.debug:
             def log(msg):
                 word = words.data[-1] if words.data else 0
-                print(f"    [{words.len():04x}] {word:08x} {bits.pos:4x}:{bits.bitpos:2x} ({lastOut:4d}) {msg}")
+                print(f"    [{words.len():04x}] {word:08x} {bits.pos:4x}:{bits.bitpos:2x} ({self.lastOut:4d}) {msg}")
 
             print("    outofs  outdata  ofs:bit last action")
         else:
@@ -206,86 +526,20 @@ class Q6Unzipper:
                 pass
 
         try:
+            p = self.tree
             while words.len() <= MAXOUT:
-                op1 = bits.get(3)
-                if op1 == 0:  # MATCH_6N_2x0_SQ0 set lastout, byte from stream
-                    lastOut = bits.get(self.LB_BITS) - (1<<self.LB_BITS)
-                    masked = bits.get(8)
-                    words.copybits(lastOut, masked, 8, 0)
-                    log(f"mask @0 m:{masked:02x}  lb={lastOut+2**self.LB_BITS:03x}")
-                elif op1 == 1:  # MATCH_8N_SQ0 set lastout, dword from lastout
-                    lastOut = bits.get(self.LB_BITS) - (1<<self.LB_BITS)
-                    words.copyword(lastOut)
+                b = bits.get(1)
+                p = p[b]
+                if type(p)!=list:
+                    m = p.read(bits)
+                    if not m.isbreak():
+                        m.decode(self, words)
+                    elif words.len() >= MAXOUT:
+                        log(m)
+                        break
+                    log(m)
 
-                    log(f"lookback  lb={lastOut+2**self.LB_BITS:03x}")
-                elif op1 == 2:
-                    if bits.get(1)==0: # MATCH_5N_3x0_SQ0        -- setting lastOut
-                        lastOut = bits.get(self.LB_BITS) - (1<<self.LB_BITS)
-                        masked = bits.get(12)
-                        words.copybits(lastOut, masked, 12, 0)
-                        log(f"mask @0 m:{masked:03x}  lb={lastOut+2**self.LB_BITS:03x}")
-                    else:
-                        op2 = bits.get(2)
-                        if op2==0: # MATCH_4N_4x0_SQ1   -- reusing 'lastOut'
-                            masked = bits.get(16)
-                            words.copybits(lastOut, masked, 16, 0)
-                            log(f"mask @0 m:{masked:04x}")
-                        elif op2==2: # MATCH_6N_2x4_SQ0        -- setting lastOut
-                            lastOut = bits.get(self.LB_BITS) - (1<<self.LB_BITS)
-                            masked = bits.get(8)
-                            words.copybits(lastOut, masked, 8, 16)
-                            log(f"mask @16 m:{masked:02x}  lb={lastOut+2**self.LB_BITS:03x}")
-                        elif op2==3: # MATCH_6N_2x2_SQ0        -- setting lastOut
-                            lastOut = bits.get(self.LB_BITS) - (1<<self.LB_BITS)
-                            masked = bits.get(8)
-                            words.copybits(lastOut, masked, 8, 8)
-                            log(f"mask @8 m:{masked:02x}  lb={lastOut+2**self.LB_BITS:03x}")
-                        elif bits.get(1): # MATCH_6N_2x2_SQ1   -- reusing 'lastOut'
-                            masked = bits.get(8)
-                            words.copybits(lastOut, masked, 8, 8)
-                            log(f"mask @8 m:{masked:02x}")
-                        else: # MATCH_6N_2x4_SQ1    -- reusing 'lastOut'
-                            masked = bits.get(8)
-                            if masked != 0xFF:
-                                # .. in the modem.elf binary a check is here for masked==0xff -> stop
-                                words.copybits(lastOut, masked, 8, 16)
-                                log(f"mask @16 m:{masked:02x}")
-                            else:
-                                log("break")
-                                if words.len() >= MAXOUT:
-                                    break
-                elif op1 == 3: # NO_MATCH
-                    masked = bits.get(32)
-                    words.addword(masked)
-                    log(f"lit {masked:08x}")
-                elif op1 == 4: # DICT1_MATCH
-                    entry = bits.get(self.DICT1_BITS)
-                    words.addword(self.dict1[entry])
-                    log(f"dict1 {entry:03x}")
-                elif op1 == 5:
-                    if bits.get(1)==0: # DICT2_MATCH
-                        entry = bits.get(self.DICT2_BITS)
-                        words.addword(self.dict2[entry])
-                        log(f"dict2 {entry:04x}")
-                    else:
-                        if bits.get(1): # MATCH_5N_3x0_SQ1   -- reusing 'lastOut'
-                            masked = bits.get(12)
-                            words.copybits(lastOut, masked, 12, 0)
-                            log(f"mask @0 m:{masked:03x}")
-                        else: # MATCH_4N_4x0_SQ0        -- setting lastOut
-                            lastOut = bits.get(self.LB_BITS) - (1<<self.LB_BITS)
-                            masked = bits.get(16)
-                            words.copybits(lastOut, masked, 16, 0)
-                            log(f"mask @0 m:{masked:04x}  lb={lastOut+2**self.LB_BITS:03x}")
-                elif op1 == 6:   # MATCH_6N_2x0_SQ1 byte from stream   -- reusing 'lastOut'
-                    masked = bits.get(8)
-                    words.copybits(lastOut, masked, 8, 0)
-                    log(f"mask @0 m:{masked:02x}")
-                elif op1 == 7:   # MATCH_8N_SQ1  dword from lastout   -- reusing 'lastOut'
-                    words.copyword(lastOut)
-                    log("seq")
-                else:
-                    print("unexpected op", op1)
+                    p = self.tree
 
         except EOFError:
             log("EOF")
@@ -436,6 +690,7 @@ def processfile(fh, args):
     if args.output:
         ofh = open(args.output, "wb")
     elif not args.nooutput:
+        import sys
         ofh = sys.stdout.buffer
     else:
         ofh = None
@@ -492,6 +747,7 @@ class ElfReader:
     wrapper translating ELF virtual addresses to file reads.
     """
     def __init__(self, fh):
+        import ELF
         self.elf = ELF.read(fh)
         self.fh = fh
 
@@ -515,6 +771,7 @@ class ElfReader:
 
 
 def main():
+    import argparse
     class Int(argparse.Action):
         """ argparse action to convert 0xNNN ints to integers """
         def __call__(self, parser, namespace, values, option_string=None):
