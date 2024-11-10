@@ -15,7 +15,7 @@ These parameters need to be guessed, or found by reverse engineering.
 ## q6zip parameters
 
  * dict1 size ( usually 10 bits )
- * dict2 size ( usually 15 bits )
+ * dict2 size ( usually 14 bits )
  * lookback size ( usually 8 bits )
  * the number of entries with sub-indices
 
@@ -61,8 +61,8 @@ The q6zip data looks something like this:
   - a dword with some size information
   - the two dictionaries, the first word usually is zero.
     The combined size is always:   2^a + 2^b,  with a != b, so a number with two bits set.
-  - folloed by a large list (+- 4000) of data pointers.
-  - followed by the ocmpressed data.
+  - followed by a large list (+- 4000) of data pointers.
+  - followed by the compressed data.
   - approx the first half of the compressed entries will start with byte 0xff, from this you may be able to find the 
     number to pass with the `--skipheader` argument.
 
@@ -96,6 +96,16 @@ virtaddr fileofs
 
 8450BB20 01aadb20 .ascii "02.01.09", 0
 ```
+
+
+# q6zipcomp.py
+
+This tool will recompress an entire q6zip section, including reconstructing the meta headers.
+
+# TODO
+
+ * Integrate q6zip, q6unzip and q6zipcomp into one tool.
+ * Implement clade compression
 
 
 # Author
