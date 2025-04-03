@@ -88,6 +88,7 @@ class CladeDecompressor:
     ]
 
     def __init__(self, dicts):
+        self.debug = False
         self.dicts = dicts
 
     def reconstructword(self, dictword, bitpositions, codebits):
@@ -114,7 +115,8 @@ class CladeDecompressor:
 
         # clade seems to skip the first bit
         first = bits.get(1)
-        print(f"firstbit = {first}")
+        if self.debug:
+            print(f"firstbit = {first}")
 
         while True:
             try:
@@ -126,10 +128,12 @@ class CladeDecompressor:
                     dlen = (len(self.missingbits[code])+3)//4
                     mbtxt = f"{missing:0{dlen}x}"
                     result = self.reconstructword(dictword, self.missingbits[code], missing)
-                    print(f"dict{code} {idx:03x}={dictword:08x} {mbtxt:>4} -> {result:08x}")
+                    if self.debug:
+                        print(f"dict{code} {idx:03x}={dictword:08x} {mbtxt:>4} -> {result:08x}")
                 else: # literal
                     result = bits.get(32)
-                    print(f"literal                 -> {result:08x}")
+                    if self.debug:
+                        print(f"literal                 -> {result:08x}")
                 out.append(result)
             except EOFError:
                 break
@@ -151,9 +155,10 @@ class CladeSegment:
         dictdata = fh.read(0x6000)
         self.dicts = [list(decodewords(dictdata[_*0x2000:(_+1)*0x2000])) for _ in range(3)]
 
-        from functools import reduce
-        for i, d in enumerate(self.dicts):
-            print(f"dict{i}: {reduce(lambda a,b:a|b, d):08x}")
+        if args.verbose:
+            from functools import reduce
+            for i, d in enumerate(self.dicts):
+                print(f"dict{i}: {reduce(lambda a,b:a|b, d):08x}")
 
     def readchunk(self, i):
         """
@@ -177,7 +182,7 @@ def processfile(fh, args):
 
     if args.output:
         ofh = open(args.output, "wb")
-    elif not args.nooutput:
+    elif not args.nooutput and not args.debug:
         import sys
         ofh = sys.stdout.buffer
     else:
@@ -190,17 +195,12 @@ def processfile(fh, args):
     cdata = fh.read(args.length)
     cdata = list(decodewords(cdata))
 
-    if args.debug:
-        print(f"[{i:04x}] {ofs:08x}-{ofs+size:08x}")
-
     uncomp = C.decompress(cdata)
-    udata = words2bytes(uncomp)
+    udata = intlist2bytes(uncomp)
 
     if ofh:
         ofh.flush()
         ofh.write(udata)
-    else:
-        print(udata.hex())
 
 
 def processhex(hexstr, args):
