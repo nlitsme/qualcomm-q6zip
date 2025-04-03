@@ -139,10 +139,11 @@ void dumpcfg(const clade_config_t& cfg)
 
 void usage()
 {
-    print("Usage: tstclade [options] filename\n");
+    print("Usage: cladetool [options] filename\n");
     print("  --dictbytesize SIZE  - default: 0x2000\n");
     print("  --ndicts COUNT       - default: 3\n");
     print("  --dictofs OFS        - default: end-0x6040\n");
+    print("  --wordsize N         - default: 1\n");
     print("  -o,--dataofs         - default: 0\n");
     print("  -l,--datasize        - default: 0x1000\n");
     print("  -v                   - show trace information\n");
