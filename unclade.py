@@ -186,7 +186,8 @@ def processfile(fh, args):
     C = CladeDecompressor(cl.dicts)
     C.debug = args.debug
 
-    cdata = cl.readchunk(0)
+    fh.seek(args.offset)
+    cdata = fh.read(args.length)
     cdata = list(decodewords(cdata))
 
     if args.debug:
@@ -198,6 +199,8 @@ def processfile(fh, args):
     if ofh:
         ofh.flush()
         ofh.write(udata)
+    else:
+        print(udata.hex())
 
 
 def processhex(hexstr, args):
@@ -254,8 +257,8 @@ def main():
             setattr(namespace, self.dest, int(values, 0))
 
     parser = argparse.ArgumentParser(description='Decompress packed clade ELF sections')
-    parser.add_argument('--offset', '-o', help='Which clade section to decompress', type=str, default="0")
-    parser.add_argument('--length', '-l', help='size of section (rawfile only)', type=str)
+    parser.add_argument('--offset', '-o', help='Which clade section to decompress', action=Int, default=0)
+    parser.add_argument('--length', '-l', help='size of section (rawfile only)', action=Int)
     parser.add_argument('--dump', help='hex dump of compressed data', action='store_true')
     parser.add_argument('--verbose', '-v', action='count')
     parser.add_argument('--debug', action='store_true', help="show all compression opcodes")
@@ -266,10 +269,6 @@ def main():
     parser.add_argument('--hex', type=str, help='uncompress hex data')
     parser.add_argument('elffile', help='Which file to process', type=str, nargs='?')
     args = parser.parse_args()
-
-    args.offset = int(args.offset, 0)
-    if args.length is not None:
-        args.length = int(args.length, 0)
 
     if args.hex:
         processhex(args.hex, args)
