@@ -689,7 +689,7 @@ def processfile(fh, args):
 
     if args.output:
         ofh = open(args.output, "wb")
-    elif not args.nooutput:
+    elif not args.nooutput and not args.debug:
         import sys
         ofh = sys.stdout.buffer
     else:
@@ -725,7 +725,6 @@ def processfile(fh, args):
         if ofh:
             ofh.flush()
             ofh.write(udata)
-
 
 
 def processhex(hexstr, args):
