@@ -120,7 +120,7 @@ class Header:
         +04 dword flags
         +08 qword fileofs
         +10 qword vaddr
-        +18 qword vaddr
+        +18 qword paddr
         +20 qword filesize
         +28 qword memsize
         +30 qword align
@@ -130,7 +130,7 @@ class Header:
         +00 dword type
         +04 dword fileofs
         +08 dword vaddr
-        +0c dword vaddr
+        +0c dword paddr
         +10 dword filesize
         +14 dword memsize
         +18 dword flags
@@ -309,7 +309,6 @@ class Header:
     def virt2file(self, offset):
         seg = self.virtseg(offset)
         if not seg:
-            print("ofs=%08x" % offset)
             raise Exception("invalid offset")
         return offset - seg.vaddr + seg.fileoffset
 
