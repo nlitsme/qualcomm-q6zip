@@ -118,8 +118,12 @@ class CladeDecompressor:
         if self.debug:
             print(f"firstbit = {first}")
 
+        outofs = 0
         while True:
             try:
+                inofs = bits.pos*4
+                inval = bits.value
+                inbit = bits.bitpos
                 code = bits.get(2)
                 if code < 3:
                     idx = bits.get(11)
@@ -129,12 +133,13 @@ class CladeDecompressor:
                     mbtxt = f"{missing:0{dlen}x}"
                     result = self.reconstructword(dictword, self.missingbits[code], missing)
                     if self.debug:
-                        print(f"dict{code} {idx:03x}={dictword:08x} {mbtxt:>4} -> {result:08x}")
+                        print(f"{inofs:08x}: {inval:08x}.{inbit:2} -> dict{code} {idx:03x}={dictword:08x} {mbtxt:>4} -> {outofs:08x}: {result:08x}")
                 else: # literal
                     result = bits.get(32)
                     if self.debug:
-                        print(f"literal                 -> {result:08x}")
+                        print(f"{inofs:08x}: {inval:08x}.{inbit:2} -> literal                 -> {outofs:08x}: {result:08x}")
                 out.append(result)
+                outofs += 4
             except EOFError:
                 break
 
@@ -151,7 +156,12 @@ class CladeSegment:
     def __init__(self, fh, args):
         self.fh = fh
         self.baseoffset = fh.tell()
-        fh.seek(fh.seek(0,2)&~0x1fff-0x6000)
+        if isinstance(fh, ElfReader):
+            end = fh.elf.virtend(self.baseoffset)
+        else:
+            end = fh.seek(0,2)
+
+        fh.seek((end&~0x1fff)-0x6000)
         dictdata = fh.read(0x6000)
         self.dicts = [list(decodewords(dictdata[_*0x2000:(_+1)*0x2000])) for _ in range(3)]
 
